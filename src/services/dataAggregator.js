@@ -1,6 +1,8 @@
 import { fetchAllTonightData, getTeamStats } from './nhlApi.js';
 import { fetchAllSOGProps, setOddsApiKey } from './oddsApi.js';
 import { runSimulation, calculateEdge, DEFAULT_WEIGHTS } from '../utils/monteCarlo.js';
+import { buildBackToBackMap } from './backToBack.js';
+import { buildGoalieMap } from './goalieService.js';
 
 export async function buildTonightAnalysis(oddsApiKey, customWeights = null) {
   const weights = customWeights || DEFAULT_WEIGHTS;
@@ -16,6 +18,12 @@ export async function buildTonightAnalysis(oddsApiKey, customWeights = null) {
     return { games: [], analyses: [], injuries: [], timestamp: new Date().toISOString(), loadTime: Date.now() - startTime, error: 'No games scheduled for today' };
   }
 
+  // === FEATURE: Back-to-Back Detection ===
+  const b2bMap = await buildBackToBackMap(games);
+
+  // === FEATURE: Starting Goalie Confirmation ===
+  const goalieMap = await buildGoalieMap(games);
+
   let oddsMap = {};
   if (oddsApiKey) {
     try { oddsMap = await fetchAllSOGProps(); }
@@ -29,14 +37,20 @@ export async function buildTonightAnalysis(oddsApiKey, customWeights = null) {
       getTeamStats(game.awayTeam.abbrev).catch(() => null),
     ]);
 
-    const homeGoalie = homeStats?.goalies?.sort((a, b) => (b.gamesStarted || 0) - (a.gamesStarted || 0))[0];
-    const awayGoalie = awayStats?.goalies?.sort((a, b) => (b.gamesStarted || 0) - (a.gamesStarted || 0))[0];
+    // Use confirmed starter if available, else fall back to usage-based
+    const goalies = goalieMap[game.id];
+    const homeGoalie = goalies?.home || homeStats?.goalies?.sort((a, b) => (b.gamesStarted || 0) - (a.gamesStarted || 0))[0];
+    const awayGoalie = goalies?.away || awayStats?.goalies?.sort((a, b) => (b.gamesStarted || 0) - (a.gamesStarted || 0))[0];
+
+    const homeGoalieSV = homeGoalie?.savePct ?? homeStats?.goalies?.[0]?.savePct ?? null;
+    const awayGoalieSV = awayGoalie?.savePct ?? awayStats?.goalies?.[0]?.savePct ?? null;
 
     oppContextMap[`${game.awayTeam.abbrev}_opp`] = {
       oppShotsAgainstPerGame: homeStats?.goalies?.reduce((sum, g) => sum + (g.shotsAgainst || 0), 0) /
         Math.max(1, homeStats?.goalies?.reduce((sum, g) => sum + (g.gamesPlayed || 0), 0) || 1),
       oppGoalieName: homeGoalie?.name || 'TBD',
-      oppGoalieSavePct: homeGoalie?.savePct || null,
+      oppGoalieSavePct: homeGoalieSV,
+      oppGoalieConfirmed: goalies?.homeConfirmed || false,
       leagueAvgShotsAgainst: 30.0,
     };
 
@@ -44,7 +58,8 @@ export async function buildTonightAnalysis(oddsApiKey, customWeights = null) {
       oppShotsAgainstPerGame: awayStats?.goalies?.reduce((sum, g) => sum + (g.shotsAgainst || 0), 0) /
         Math.max(1, awayStats?.goalies?.reduce((sum, g) => sum + (g.gamesPlayed || 0), 0) || 1),
       oppGoalieName: awayGoalie?.name || 'TBD',
-      oppGoalieSavePct: awayGoalie?.savePct || null,
+      oppGoalieSavePct: awayGoalieSV,
+      oppGoalieConfirmed: goalies?.awayConfirmed || false,
       leagueAvgShotsAgainst: 30.0,
     };
   }
@@ -55,7 +70,11 @@ export async function buildTonightAnalysis(oddsApiKey, customWeights = null) {
     if (player.seasonAvgSOG < 0.8) continue;
 
     const oppContext = oppContextMap[`${player.team}_opp`] || {};
-    const matchupContext = { ...oppContext, isBackToBack: false, vegasTotal: 6.0 };
+
+    // Wire in real B2B status
+    const isBackToBack = b2bMap[player.team] || false;
+
+    const matchupContext = { ...oppContext, isBackToBack, vegasTotal: 6.0 };
     const sim = runSimulation(player, matchupContext, weights);
     if (sim.error) continue;
 
@@ -81,6 +100,8 @@ export async function buildTonightAnalysis(oddsApiKey, customWeights = null) {
       gameLog: player.gameLog,
       seasonAvgSOG: player.seasonAvgSOG,
       simulation: sim,
+      isBackToBack,
+      oppGoalieConfirmed: oppContext.oppGoalieConfirmed || false,
       odds: odds ? {
         line: odds.line,
         overOdds: odds.overOdds,
@@ -105,6 +126,7 @@ export async function buildTonightAnalysis(oddsApiKey, customWeights = null) {
     analyses,
     standings,
     weights,
+    b2bTeams: Object.entries(b2bMap).filter(([,v]) => v).map(([k]) => k),
     timestamp: new Date().toISOString(),
     loadTime: elapsed,
     playersScanned: players.length,

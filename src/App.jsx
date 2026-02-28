@@ -1,11 +1,18 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart, Line, CartesianGrid, ReferenceLine, Cell } from 'recharts';
-import { buildTonightAnalysis } from './services/dataAggregator.js';
-import { DEFAULT_WEIGHTS } from './utils/monteCarlo.js';
+import AlertBanner from './components/AlertBanner.jsx';
+import WeightTuner from './components/WeightTuner.jsx';
+import ResultsTracker from './components/ResultsTracker.jsx';
+import { suggestWeightAdjustments, getAllPicks } from './services/firestoreService.js';
 
-const ODDS_API_KEY = import.meta.env.VITE_ODDS_API_KEY || '';
 const MONO = "'JetBrains Mono', 'Fira Code', monospace";
 const DISPLAY = "'Outfit', 'DM Sans', sans-serif";
+
+const DEFAULT_WEIGHTS = {
+  seasonAvgSOG: 0.20, last5AvgSOG: 0.25, last10AvgSOG: 0.15,
+  homeAwayAdj: 0.05, oppShotsAgainst: 0.10, toiTrend: 0.08,
+  ppTimeFactor: 0.07, backToBack: 0.03, oppGoalieSVPct: 0.04, vegasTotal: 0.03,
+};
 
 function oddsToProb(odds) {
   if (odds < 0) return Math.abs(odds) / (Math.abs(odds) + 100);
@@ -56,6 +63,8 @@ function PlayerRow({ analysis, rank, onClick }) {
         <div style={{ fontFamily: DISPLAY, fontWeight: 700, fontSize: 14, color: "#f1f5f9", display: "flex", alignItems: "center", gap: 8 }}>
           {analysis.headshot && <img src={analysis.headshot} alt="" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} onError={e => e.target.style.display='none'} />}
           {analysis.name}
+          {analysis.isBackToBack && <span style={{ fontSize: 9, fontFamily: MONO, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '1px 5px', borderRadius: 3 }}>B2B</span>}
+          {!analysis.oppGoalieConfirmed && analysis.odds && <span style={{ fontSize: 9, fontFamily: MONO, color: '#64748b' }}>⚠🥅</span>}
         </div>
         <div style={{ fontSize: 11, color: "#64748b", marginTop: 2, fontFamily: MONO }}>{analysis.team} • {analysis.position} • {analysis.homeAway === "home" ? "vs" : "@"} {analysis.opponent}</div>
       </div>
@@ -79,7 +88,7 @@ function SimHistogram({ simulation, bookLine }) {
       <ResponsiveContainer width="100%" height={200}>
         <BarChart data={data} barCategoryGap="15%">
           <XAxis dataKey="sog" stroke="#475569" tick={{ fontSize: 11, fontFamily: MONO, fill: "#94a3b8" }} />
-          <YAxis stroke="#475569" tick={{ fontSize: 10, fontFamily: MONO, fill: "#64748b" }} tickFormatter={v => `${(v/100).toFixed(0)}%`} />
+          <YAxis stroke="#475569" tick={{ fontSize: 10, fontFamily: MONO, fill: "#64748b" }} tickFormatter={v => `${v}%`} />
           <Tooltip contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, fontFamily: MONO, fontSize: 12 }} formatter={v => [`${v}%`, "Probability"]} labelFormatter={v => `${v} SOG`} />
           {bookLine && <ReferenceLine x={bookLine} stroke="#f59e0b" strokeDasharray="4 4" strokeWidth={2} />}
           <Bar dataKey="pct" radius={[4, 4, 0, 0]}>{data.map((e, i) => <Cell key={i} fill={e.overLine ? "#4ade80" : "#334155"} />)}</Bar>
@@ -109,7 +118,7 @@ function SOGTrendChart({ gameLog }) {
   );
 }
 
-function PlayerDetail({ analysis, onBack }) {
+function PlayerDetail({ analysis, onBack, onLogPick }) {
   const { odds, edge, simulation } = analysis;
   const hasOdds = odds && odds.line != null;
   const modelProb = hasOdds ? (simulation.probabilities[odds.line] || 0) * 100 : 0;
@@ -126,16 +135,40 @@ function PlayerDetail({ analysis, onBack }) {
         <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
           {analysis.headshot && <img src={analysis.headshot} alt="" style={{ width: 64, height: 64, borderRadius: "50%" }} onError={e => e.target.style.display='none'} />}
           <div>
-            <div style={{ fontFamily: DISPLAY, fontSize: 26, fontWeight: 800, color: "#f1f5f9" }}>{analysis.name}</div>
-            <div style={{ fontFamily: MONO, fontSize: 12, color: "#64748b", marginTop: 4 }}>{analysis.team} • {analysis.position} • {analysis.homeAway === "home" ? "vs" : "@"} {analysis.opponent}</div>
+            <div style={{ fontFamily: DISPLAY, fontSize: 26, fontWeight: 800, color: "#f1f5f9", display: 'flex', alignItems: 'center', gap: 10 }}>
+              {analysis.name}
+              {analysis.isBackToBack && (
+                <span style={{ fontSize: 12, fontFamily: MONO, color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '3px 8px', borderRadius: 5 }}>B2B ⚠</span>
+              )}
+            </div>
+            <div style={{ fontFamily: MONO, fontSize: 12, color: "#64748b", marginTop: 4 }}>
+              {analysis.team} • {analysis.position} • {analysis.homeAway === "home" ? "vs" : "@"} {analysis.opponent}
+            </div>
+            {!analysis.oppGoalieConfirmed && (
+              <div style={{ fontFamily: MONO, fontSize: 10, color: '#f59e0b', marginTop: 4 }}>
+                ⚠ Opposing goalie not yet confirmed — projection may shift
+              </div>
+            )}
           </div>
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ fontFamily: MONO, fontSize: 36, fontWeight: 800, color: "#f1f5f9" }}>{simulation.projection}</div>
           <div style={{ fontFamily: MONO, fontSize: 11, color: "#64748b" }}>PROJECTED SOG</div>
           {hasOdds && <div style={{ marginTop: 8 }}><EdgeBadge edge={edgeVal} /></div>}
+          {hasOdds && (
+            <button
+              onClick={() => onLogPick(analysis)}
+              style={{
+                marginTop: 10, padding: '7px 14px', borderRadius: 7,
+                background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)',
+                color: '#4ade80', fontFamily: MONO, fontSize: 11,
+                cursor: 'pointer', fontWeight: 700,
+              }}
+            >+ LOG PICK</button>
+          )}
         </div>
       </div>
+
       {hasOdds && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 }}>
           {[{ label: "BOOK LINE", value: `Over ${odds.line}`, sub: odds.bookmaker },
@@ -151,10 +184,12 @@ function PlayerDetail({ analysis, onBack }) {
           ))}
         </div>
       )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
         <div style={{ padding: 20, background: "rgba(15,23,42,0.6)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.04)" }}><SOGTrendChart gameLog={analysis.gameLog} /></div>
         <div style={{ padding: 20, background: "rgba(15,23,42,0.6)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.04)" }}><SimHistogram simulation={simulation} bookLine={odds?.line} /></div>
       </div>
+
       <div style={{ padding: 20, background: "rgba(15,23,42,0.6)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.04)", marginBottom: 24 }}>
         <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 10, fontFamily: MONO }}>PROBABILITY TABLE</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
@@ -169,6 +204,7 @@ function PlayerDetail({ analysis, onBack }) {
           })}
         </div>
       </div>
+
       <div style={{ padding: 20, background: "rgba(15,23,42,0.6)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.04)", marginBottom: 24 }}>
         <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 10, fontFamily: MONO }}>FACTOR BREAKDOWN</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -178,7 +214,7 @@ function PlayerDetail({ analysis, onBack }) {
             { label: "Opp SA/Game", value: factors.oppSAPerGame, dir: factors.oppDirection || "neutral" },
             { label: "Avg TOI", value: `${factors.avgTOI} min`, dir: factors.toiDirection || "neutral" },
             { label: "PP TOI/Game", value: `${factors.avgPPTOI} min`, dir: "neutral" },
-            { label: `Goalie: ${factors.oppGoalie || 'TBD'}`, value: factors.oppGoalieSV ? `${(factors.oppGoalieSV*100).toFixed(1)}%` : "—", dir: factors.goalieDirection || "neutral" },
+            { label: `Goalie: ${factors.oppGoalie || 'TBD'}${analysis.oppGoalieConfirmed ? ' ✅' : ' ❓'}`, value: factors.oppGoalieSV ? `${(factors.oppGoalieSV*100).toFixed(1)}%` : "—", dir: factors.goalieDirection || "neutral" },
             { label: "Back-to-Back", value: factors.isBackToBack ? "YES ⚠" : "No", dir: factors.isBackToBack ? "negative" : "neutral" },
           ].filter(f => f.value != null).map((f, i) => (
             <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 80px 30px", alignItems: "center", padding: "7px 12px", background: "rgba(15,23,42,0.6)", borderRadius: 6 }}>
@@ -189,6 +225,7 @@ function PlayerDetail({ analysis, onBack }) {
           ))}
         </div>
       </div>
+
       <div style={{ padding: 20, background: "rgba(15,23,42,0.6)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.04)" }}>
         <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 10, fontFamily: MONO }}>GAME LOG — LAST {Math.min(20, analysis.gameLog.length)} GAMES</div>
         <div style={{ overflowX: "auto" }}>
@@ -212,30 +249,90 @@ function FilterBtn({ active, onClick, children }) {
 function SmallBtn({ active, onClick, children }) {
   return <button onClick={onClick} style={{ padding: "4px 10px", borderRadius: 6, border: "none", background: active ? "rgba(255,255,255,0.08)" : "transparent", color: active ? "#f1f5f9" : "#64748b", fontFamily: MONO, fontSize: 11, cursor: "pointer" }}>{children}</button>;
 }
+function NavTab({ active, onClick, children }) {
+  return <button onClick={onClick} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: active ? "rgba(74,222,128,0.1)" : "transparent", color: active ? "#4ade80" : "#64748b", fontFamily: MONO, fontSize: 12, fontWeight: 700, cursor: "pointer", borderBottom: active ? "2px solid #4ade80" : "2px solid transparent" }}>{children}</button>;
+}
 
 export default function App() {
   const [loading, setLoading] = useState(true);
-  const [loadStatus, setLoadStatus] = useState("Initializing...");
+  const [loadStatus, setLoadStatus] = useState("Loading analysis...");
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [filterGame, setFilterGame] = useState("all");
   const [filterEdge, setFilterEdge] = useState("all");
   const [sortBy, setSortBy] = useState("edge");
+  const [dataSource, setDataSource] = useState(null);
+  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard | tracker | weights
+  const [customWeights, setCustomWeights] = useState(null);
+  const [weightSuggestions, setWeightSuggestions] = useState(null);
+  const [recalculating, setRecalculating] = useState(false);
+  const [quickLogPlayer, setQuickLogPlayer] = useState(null);
 
   useEffect(() => {
-    async function loadData() {
-      try {
-        setLoadStatus("Fetching tonight's schedule & player data...");
-        const result = await buildTonightAnalysis(ODDS_API_KEY);
-        setData(result);
-        if (result.error) setError(result.error);
-      } catch (err) {
-        setError(`Failed to load: ${err.message}`);
-      } finally { setLoading(false); }
-    }
     loadData();
+    loadPickSuggestions();
   }, []);
+
+  async function loadPickSuggestions() {
+    try {
+      const picks = await getAllPicks();
+      const suggestions = suggestWeightAdjustments(picks, customWeights || DEFAULT_WEIGHTS);
+      setWeightSuggestions(suggestions);
+    } catch (e) {
+      console.warn('Could not load pick suggestions:', e);
+    }
+  }
+
+  async function loadData(weightsOverride = null) {
+    setLoading(true);
+    try {
+      setLoadStatus("Loading pre-computed analysis...");
+      const res = await fetch('/latest-analysis.json');
+      if (res.ok) {
+        const result = await res.json();
+        if (result.analyses && result.analyses.length > 0) {
+          setData(result);
+          setDataSource('precomputed');
+          setLoading(false);
+          return;
+        }
+      }
+    } catch (e) {
+      console.log('No pre-computed data, trying live...');
+    }
+
+    try {
+      setLoadStatus("Fetching live data with B2B & goalie detection...");
+      const { buildTonightAnalysis } = await import('./services/dataAggregator.js');
+      const ODDS_API_KEY = import.meta.env.VITE_ODDS_API_KEY || '';
+      const result = await buildTonightAnalysis(ODDS_API_KEY, weightsOverride);
+      setData(result);
+      setDataSource('live');
+      if (result.error) setError(result.error);
+    } catch (err) {
+      setError('No data available. Run: node scripts/daily-fetch.js');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleApplyWeights(newWeights) {
+    setCustomWeights(newWeights);
+    setRecalculating(true);
+    setActiveTab('dashboard');
+    try {
+      const { buildTonightAnalysis } = await import('./services/dataAggregator.js');
+      const ODDS_API_KEY = import.meta.env.VITE_ODDS_API_KEY || '';
+      const result = await buildTonightAnalysis(ODDS_API_KEY, newWeights);
+      setData(result);
+      setDataSource('live');
+    } catch (e) {
+      console.error('Recalc error:', e);
+    } finally {
+      setRecalculating(false);
+    }
+  }
 
   const filteredAnalyses = useMemo(() => {
     if (!data?.analyses) return [];
@@ -256,53 +353,130 @@ export default function App() {
     return filtered;
   }, [data, filterGame, filterEdge, sortBy]);
 
-  if (loading) return <LoadingScreen status={loadStatus} />;
+  if (loading || recalculating) return <LoadingScreen status={recalculating ? "Recalculating with new weights..." : loadStatus} />;
+
   if (error || !data?.analyses?.length) return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, background: "linear-gradient(145deg, #0a0e1a 0%, #0f172a 40%, #0a0e1a 100%)" }}>
       <div style={{ fontSize: 48 }}>🏒</div>
-      <h1 style={{ fontFamily: DISPLAY, fontSize: 24, fontWeight: 800, color: "#f1f5f9" }}>No Games Tonight</h1>
-      <p style={{ fontFamily: MONO, fontSize: 13, color: "#64748b", textAlign: "center", maxWidth: 400 }}>{error || "Check back on a game day!"}</p>
+      <h1 style={{ fontFamily: DISPLAY, fontSize: 24, fontWeight: 800, color: "#f1f5f9" }}>No Data Available</h1>
+      <p style={{ fontFamily: MONO, fontSize: 13, color: "#64748b", textAlign: "center", maxWidth: 500, lineHeight: 1.6 }}>
+        {error || "Run the daily script to generate today's analysis:"}<br/><br/>
+        <code style={{ background: "#1e293b", padding: "8px 14px", borderRadius: 6, display: "inline-block" }}>node scripts/daily-fetch.js</code>
+      </p>
     </div>
   );
 
   const edgesFound = data.analyses.filter(a => a.hasEdge).length;
   const selected = selectedPlayer ? data.analyses.find(a => a.id === selectedPlayer) : null;
+  const timestamp = data.timestamp ? new Date(data.timestamp) : null;
+  const timeStr = timestamp ? timestamp.toLocaleString() : '';
+  const b2bTeams = data.b2bTeams || [];
 
   return (
     <div style={{ minHeight: "100vh", background: "linear-gradient(145deg, #0a0e1a 0%, #0f172a 40%, #0a0e1a 100%)", color: "#e2e8f0", fontFamily: DISPLAY }}>
-      <style>{`@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } } @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }`}</style>
+      <style>{`
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+        @keyframes loading { 0% { transform: translateX(-100%); } 50% { transform: translateX(100%); } 100% { transform: translateX(-100%); } }
+      `}</style>
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 20px" }}>
-        <div style={{ marginBottom: 24 }}>
+
+        {/* Header */}
+        <div style={{ marginBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
             <span style={{ fontSize: 28 }}>🏒</span>
             <h1 style={{ fontFamily: DISPLAY, fontSize: 24, fontWeight: 900, color: "#f1f5f9", margin: 0 }}>SOG EDGE FINDER</h1>
-            <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "rgba(74,222,128,0.1)", color: "#4ade80", border: "1px solid rgba(74,222,128,0.2)", letterSpacing: 1, animation: "pulse 2s ease-in-out infinite" }}>LIVE</span>
+            <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: dataSource === 'precomputed' ? "rgba(74,222,128,0.1)" : "rgba(250,204,21,0.1)", color: dataSource === 'precomputed' ? "#4ade80" : "#facc15", border: `1px solid ${dataSource === 'precomputed' ? "rgba(74,222,128,0.2)" : "rgba(250,204,21,0.2)"}`, letterSpacing: 1 }}>
+              {dataSource === 'precomputed' ? 'DAILY' : 'LIVE'}
+            </span>
+            {customWeights && <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: "rgba(250,204,21,0.1)", color: "#facc15", border: "1px solid rgba(250,204,21,0.2)" }}>CUSTOM WEIGHTS</span>}
           </div>
-          <div style={{ fontFamily: MONO, fontSize: 11, color: "#475569" }}>{data.games.length} Games • {data.playersScanned} Players • {edgesFound} Edges{data.loadTime ? ` • ${(data.loadTime/1000).toFixed(1)}s` : ''}</div>
+          <div style={{ fontFamily: MONO, fontSize: 11, color: "#475569", display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <span>{data.games.length} Games</span>
+            <span>•</span>
+            <span>{data.playersScanned} Players</span>
+            <span>•</span>
+            <span>{edgesFound} Edges</span>
+            {b2bTeams.length > 0 && <><span>•</span><span style={{ color: '#f59e0b' }}>🔄 B2B: {b2bTeams.join(', ')}</span></>}
+            {timeStr && <><span>•</span><span>Updated: {timeStr}</span></>}
+          </div>
         </div>
-        {selected ? <PlayerDetail analysis={selected} onBack={() => setSelectedPlayer(null)} /> : (
-          <div style={{ animation: "fadeIn 0.25s ease" }}>
-            <div style={{ display: "flex", gap: 8, marginBottom: 20, overflowX: "auto", paddingBottom: 4 }}>
-              <FilterBtn active={filterGame==="all"} onClick={() => setFilterGame("all")}>ALL GAMES</FilterBtn>
-              {data.games.map((g, i) => { const key = `${g.awayTeam.abbrev}-${g.homeTeam.abbrev}`; return <FilterBtn key={i} active={filterGame===key} onClick={() => setFilterGame(key)}>{g.awayTeam.abbrev} @ {g.homeTeam.abbrev}</FilterBtn>; })}
-            </div>
-            <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ fontFamily: MONO, fontSize: 10, color: "#475569" }}>EDGE:</span>
-              {[{key:"all",label:"All"},{key:"any",label:"2%+"},{key:"moderate",label:"5%+"},{key:"strong",label:"10%+"}].map(f => <SmallBtn key={f.key} active={filterEdge===f.key} onClick={() => setFilterEdge(f.key)}>{f.label}</SmallBtn>)}
-              <div style={{ flex: 1 }} />
-              <span style={{ fontFamily: MONO, fontSize: 10, color: "#475569" }}>SORT:</span>
-              {[{key:"edge",label:"Edge"},{key:"projection",label:"Proj"},{key:"name",label:"Name"}].map(s => <SmallBtn key={s.key} active={sortBy===s.key} onClick={() => setSortBy(s.key)}>{s.label}</SmallBtn>)}
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "36px 2fr 70px 70px 1fr 90px 140px", padding: "8px 16px", borderBottom: "1px solid rgba(255,255,255,0.08)", fontFamily: MONO, fontSize: 10, color: "#475569", fontWeight: 700 }}>
-              <span>#</span><span>PLAYER</span><span style={{textAlign:"center"}}>LINE</span><span style={{textAlign:"center"}}>ODDS</span><span style={{textAlign:"center"}}>MODEL vs BOOK</span><span style={{textAlign:"center"}}>PROJ</span><span>EDGE</span>
-            </div>
-            {filteredAnalyses.map((a, i) => <PlayerRow key={a.id} analysis={a} rank={i+1} onClick={() => setSelectedPlayer(a.id)} />)}
-            {filteredAnalyses.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "#475569", fontFamily: MONO }}>No players match filters.</div>}
-            <div style={{ marginTop: 24, padding: 14, background: "rgba(15,23,42,0.6)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.04)" }}>
-              <div style={{ fontSize: 10, color: "#64748b", fontFamily: MONO, fontWeight: 700, marginBottom: 8, letterSpacing: 1 }}>⚙ MODEL WEIGHTS</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{Object.entries(data.weights||DEFAULT_WEIGHTS).map(([k,v]) => <span key={k} style={{ fontFamily: MONO, fontSize: 10, padding: "3px 8px", borderRadius: 4, background: "rgba(255,255,255,0.03)", color: "#94a3b8" }}>{k}: {(v*100).toFixed(0)}%</span>)}</div>
-            </div>
+
+        {/* Nav tabs */}
+        {!selected && (
+          <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: 0 }}>
+            <NavTab active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')}>📊 Dashboard</NavTab>
+            <NavTab active={activeTab === 'tracker'} onClick={() => setActiveTab('tracker')}>📋 Results Tracker</NavTab>
+            <NavTab active={activeTab === 'weights'} onClick={() => setActiveTab('weights')}>
+              ⚙ Weights{weightSuggestions && Object.keys(weightSuggestions).length > 0 ? ' 💡' : ''}
+            </NavTab>
           </div>
+        )}
+
+        {/* Player detail view */}
+        {selected ? (
+          <PlayerDetail
+            analysis={selected}
+            onBack={() => setSelectedPlayer(null)}
+            onLogPick={(a) => { setSelectedPlayer(null); setActiveTab('tracker'); setQuickLogPlayer(a); }}
+          />
+        ) : (
+          <>
+            {/* Dashboard tab */}
+            {activeTab === 'dashboard' && (
+              <div style={{ animation: "fadeIn 0.25s ease" }}>
+                <AlertBanner
+                  analyses={data.analyses}
+                  onPlayerClick={(id) => setSelectedPlayer(id)}
+                />
+                <div style={{ display: "flex", gap: 8, marginBottom: 20, overflowX: "auto", paddingBottom: 4 }}>
+                  <FilterBtn active={filterGame==="all"} onClick={() => setFilterGame("all")}>ALL GAMES</FilterBtn>
+                  {data.games.map((g, i) => { const key = `${g.awayTeam.abbrev}-${g.homeTeam.abbrev}`; return <FilterBtn key={i} active={filterGame===key} onClick={() => setFilterGame(key)}>{g.awayTeam.abbrev} @ {g.homeTeam.abbrev}</FilterBtn>; })}
+                </div>
+                <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: MONO, fontSize: 10, color: "#475569" }}>EDGE:</span>
+                  {[{key:"all",label:"All"},{key:"any",label:"2%+"},{key:"moderate",label:"5%+"},{key:"strong",label:"10%+"}].map(f => <SmallBtn key={f.key} active={filterEdge===f.key} onClick={() => setFilterEdge(f.key)}>{f.label}</SmallBtn>)}
+                  <div style={{ flex: 1 }} />
+                  <span style={{ fontFamily: MONO, fontSize: 10, color: "#475569" }}>SORT:</span>
+                  {[{key:"edge",label:"Edge"},{key:"projection",label:"Proj"},{key:"name",label:"Name"}].map(s => <SmallBtn key={s.key} active={sortBy===s.key} onClick={() => setSortBy(s.key)}>{s.label}</SmallBtn>)}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "36px 2fr 70px 70px 1fr 90px 140px", padding: "8px 16px", borderBottom: "1px solid rgba(255,255,255,0.08)", fontFamily: MONO, fontSize: 10, color: "#475569", fontWeight: 700 }}>
+                  <span>#</span><span>PLAYER</span><span style={{textAlign:"center"}}>LINE</span><span style={{textAlign:"center"}}>ODDS</span><span style={{textAlign:"center"}}>MODEL vs BOOK</span><span style={{textAlign:"center"}}>PROJ</span><span>EDGE</span>
+                </div>
+                {filteredAnalyses.map((a, i) => <PlayerRow key={a.id} analysis={a} rank={i+1} onClick={() => setSelectedPlayer(a.id)} />)}
+                {filteredAnalyses.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "#475569", fontFamily: MONO }}>No players match filters.</div>}
+                <div style={{ marginTop: 24, padding: 14, background: "rgba(15,23,42,0.6)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.04)" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontFamily: MONO, fontWeight: 700, marginBottom: 8, letterSpacing: 1 }}>⚙ MODEL WEIGHTS {customWeights ? '(CUSTOM)' : '(DEFAULT)'}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{Object.entries(data.weights||DEFAULT_WEIGHTS).map(([k,v]) => <span key={k} style={{ fontFamily: MONO, fontSize: 10, padding: "3px 8px", borderRadius: 4, background: "rgba(255,255,255,0.03)", color: "#94a3b8" }}>{k}: {(v*100).toFixed(0)}%</span>)}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Results Tracker tab */}
+            {activeTab === 'tracker' && (
+              <ResultsTracker
+                analyses={data.analyses}
+                quickLogPlayer={quickLogPlayer}
+                onQuickLogConsumed={() => setQuickLogPlayer(null)}
+              />
+            )}
+
+            {/* Weights tab */}
+            {activeTab === 'weights' && (
+              <div style={{ animation: "fadeIn 0.25s ease" }}>
+                {weightSuggestions && Object.keys(weightSuggestions).length > 0 && (
+                  <div style={{ padding: '12px 16px', marginBottom: 16, borderRadius: 8, background: 'rgba(250,204,21,0.06)', border: '1px solid rgba(250,204,21,0.15)', fontFamily: MONO, fontSize: 11, color: '#facc15' }}>
+                    💡 Your results suggest some weight adjustments. See the suggestions in the tuner below.
+                  </div>
+                )}
+                <WeightTuner
+                  currentWeights={customWeights || DEFAULT_WEIGHTS}
+                  suggestions={weightSuggestions}
+                  onApply={handleApplyWeights}
+                />
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
