@@ -2,12 +2,29 @@ name: Daily SOG Fetch & Deploy
 
 on:
   schedule:
-    - cron: '0 22 * * *'  # 5 PM ET (22:00 UTC)
-  workflow_dispatch:       # Allow manual trigger from GitHub UI
+    - cron: '0 22 * * *'   # 5 PM ET — fetch today's data & deploy
+    - cron: '0 6 * * *'    # 1 AM ET — settle last night's picks
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which job to run manually'
+        required: true
+        default: 'fetch'
+        type: choice
+        options:
+          - fetch
+          - settle
+          - both
 
 jobs:
+  # ============================================================
+  # JOB 1: Daily fetch + deploy (runs at 5 PM ET)
+  # ============================================================
   fetch-and-deploy:
     runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 22 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'fetch' || github.event.inputs.job == 'both'))
 
     steps:
       - name: Checkout repo
@@ -40,9 +57,38 @@ jobs:
         run: npm run build
 
       - name: Deploy to Firebase
-        uses: FirebaseExtended/action-hosting-deploy@v0
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: npx firebase-tools@latest deploy --only hosting --token "$FIREBASE_TOKEN" --project sog-edge-finder-ms --non-interactive
+
+  # ============================================================
+  # JOB 2: Nightly auto-settler (runs at 1 AM ET)
+  # ============================================================
+  settle-picks:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 6 * * *') ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'settle' || github.event.inputs.job == 'both'))
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_TOKEN }}
-          projectId: sog-edge-finder-ms
-          channelId: live
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install firebase-admin
+        run: npm install firebase-admin
+
+      - name: Run auto-settler
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
+          FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
+        run: node scripts/settle-picks.cjs
