@@ -268,6 +268,10 @@ export default function App() {
   const [weightSuggestions, setWeightSuggestions] = useState(null);
   const [recalculating, setRecalculating] = useState(false);
   const [quickLogPlayer, setQuickLogPlayer] = useState(null);
+  const [weightsUnlocked, setWeightsUnlocked] = useState(false);
+  const [weightsPwInput, setWeightsPwInput] = useState('');
+  const [weightsPwError, setWeightsPwError] = useState(false);
+  const WEIGHTS_PASSWORD = 'sog2026';
 
   useEffect(() => {
     loadData();
@@ -464,16 +468,52 @@ export default function App() {
             {/* Weights tab */}
             {activeTab === 'weights' && (
               <div style={{ animation: "fadeIn 0.25s ease" }}>
-                {weightSuggestions && Object.keys(weightSuggestions).length > 0 && (
-                  <div style={{ padding: '12px 16px', marginBottom: 16, borderRadius: 8, background: 'rgba(250,204,21,0.06)', border: '1px solid rgba(250,204,21,0.15)', fontFamily: MONO, fontSize: 11, color: '#facc15' }}>
-                    💡 Your results suggest some weight adjustments. See the suggestions in the tuner below.
+                {!weightsUnlocked ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 300, gap: 16 }}>
+                    <div style={{ fontSize: 36 }}>🔒</div>
+                    <div style={{ fontFamily: DISPLAY, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Weight Tuner</div>
+                    <div style={{ fontFamily: MONO, fontSize: 12, color: '#64748b' }}>Enter password to access model weights</div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <input
+                        type="password"
+                        value={weightsPwInput}
+                        onChange={e => { setWeightsPwInput(e.target.value); setWeightsPwError(false); }}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            if (weightsPwInput === WEIGHTS_PASSWORD) { setWeightsUnlocked(true); setWeightsPwInput(''); }
+                            else { setWeightsPwError(true); setWeightsPwInput(''); }
+                          }
+                        }}
+                        placeholder="Password"
+                        style={{ padding: '9px 14px', borderRadius: 8, border: `1px solid ${weightsPwError ? '#ef4444' : 'rgba(255,255,255,0.1)'}`, background: 'rgba(15,23,42,0.8)', color: '#f1f5f9', fontFamily: MONO, fontSize: 13, outline: 'none', width: 200 }}
+                      />
+                      <button
+                        onClick={() => {
+                          if (weightsPwInput === WEIGHTS_PASSWORD) { setWeightsUnlocked(true); setWeightsPwInput(''); }
+                          else { setWeightsPwError(true); setWeightsPwInput(''); }
+                        }}
+                        style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: 'rgba(74,222,128,0.15)', color: '#4ade80', fontFamily: MONO, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+                      >UNLOCK</button>
+                    </div>
+                    {weightsPwError && <div style={{ fontFamily: MONO, fontSize: 11, color: '#ef4444' }}>Incorrect password</div>}
                   </div>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                      <button onClick={() => setWeightsUnlocked(false)} style={{ background: 'none', border: 'none', color: '#475569', fontFamily: MONO, fontSize: 11, cursor: 'pointer' }}>🔒 Lock</button>
+                    </div>
+                    {weightSuggestions && Object.keys(weightSuggestions).length > 0 && (
+                      <div style={{ padding: '12px 16px', marginBottom: 16, borderRadius: 8, background: 'rgba(250,204,21,0.06)', border: '1px solid rgba(250,204,21,0.15)', fontFamily: MONO, fontSize: 11, color: '#facc15' }}>
+                        💡 Your results suggest some weight adjustments. See the suggestions in the tuner below.
+                      </div>
+                    )}
+                    <WeightTuner
+                      currentWeights={customWeights || DEFAULT_WEIGHTS}
+                      suggestions={weightSuggestions}
+                      onApply={handleApplyWeights}
+                    />
+                  </>
                 )}
-                <WeightTuner
-                  currentWeights={customWeights || DEFAULT_WEIGHTS}
-                  suggestions={weightSuggestions}
-                  onApply={handleApplyWeights}
-                />
               </div>
             )}
           </>
