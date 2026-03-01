@@ -2,9 +2,10 @@ name: Daily SOG Fetch & Deploy
 
 on:
   schedule:
-    - cron: '0 22 * * *'    # 5 PM ET  — full fetch & deploy
-    - cron: '30 23 * * *'   # 6:30 PM ET — goalie update & redeploy
-    - cron: '0 6 * * *'     # 1 AM ET  — settle last night's picks
+    - cron: '0 15 * * 0,6'   # 10:00 AM ET (Sat & Sun) — early fetch for afternoon games
+    - cron: '0 22 * * *'     # 5:00 PM ET (daily)      — full fetch & deploy
+    - cron: '30 23 * * *'    # 6:30 PM ET (daily)      — goalie update & redeploy
+    - cron: '0 6 * * *'      # 1:00 AM ET (daily)      — settle last night's picks
   workflow_dispatch:
     inputs:
       job:
@@ -20,13 +21,20 @@ on:
 
 jobs:
   # ============================================================
-  # JOB 1: Full daily fetch + deploy (5 PM ET)
+  # JOB 1: Full daily fetch + deploy
+  # Runs at: 10 AM ET Sat/Sun + 5 PM ET daily
   # ============================================================
   fetch-and-deploy:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '0 22 * * *') ||
-      (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'fetch' || github.event.inputs.job == 'both'))
+      (github.event_name == 'schedule' && (
+        github.event.schedule == '0 22 * * *' ||
+        github.event.schedule == '0 15 * * 0,6'
+      )) ||
+      (github.event_name == 'workflow_dispatch' && (
+        github.event.inputs.job == 'fetch' ||
+        github.event.inputs.job == 'both'
+      ))
 
     steps:
       - name: Checkout repo
@@ -67,7 +75,7 @@ jobs:
         run: npx firebase-tools@latest deploy --only hosting --token "$FIREBASE_TOKEN" --project sog-edge-finder-ms --non-interactive
 
   # ============================================================
-  # JOB 2: Goalie update + redeploy (6:30 PM ET)
+  # JOB 2: Goalie update + redeploy (6:30 PM ET daily)
   # ============================================================
   update-goalies:
     runs-on: ubuntu-latest
@@ -116,7 +124,7 @@ jobs:
         run: npx firebase-tools@latest deploy --only hosting --token "$FIREBASE_TOKEN" --project sog-edge-finder-ms --non-interactive
 
   # ============================================================
-  # JOB 3: Nightly auto-settler (1 AM ET)
+  # JOB 3: Nightly auto-settler (1 AM ET daily)
   # ============================================================
   settle-picks:
     runs-on: ubuntu-latest
