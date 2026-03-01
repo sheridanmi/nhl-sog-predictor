@@ -5,7 +5,7 @@ on:
     - cron: '0 15 * * 0,6'   # 10:00 AM ET (Sat & Sun) — early fetch for afternoon games
     - cron: '0 22 * * *'     # 5:00 PM ET (daily)      — full fetch & deploy
     - cron: '30 23 * * *'    # 6:30 PM ET (daily)      — goalie update & redeploy
-    - cron: '0 6 * * *'      # 1:00 AM ET (daily)      — settle last night's picks
+    - cron: '0 6 * * *'      # 1:00 AM ET (daily)      — settle picks & snapshots
   workflow_dispatch:
     inputs:
       job:
@@ -21,7 +21,7 @@ on:
 
 jobs:
   # ============================================================
-  # JOB 1: Full daily fetch + deploy
+  # JOB 1: Full fetch + deploy
   # Runs at: 10 AM ET Sat/Sun + 5 PM ET daily
   # ============================================================
   fetch-and-deploy:
@@ -54,6 +54,15 @@ jobs:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           VITE_ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: node scripts/daily-fetch.cjs
+
+      - name: Save snapshot to Firestore
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
+          FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
+        run: |
+          npm install firebase-admin --no-save
+          node scripts/save-snapshot.cjs
 
       - name: Build app
         env:
@@ -124,7 +133,7 @@ jobs:
         run: npx firebase-tools@latest deploy --only hosting --token "$FIREBASE_TOKEN" --project sog-edge-finder-ms --non-interactive
 
   # ============================================================
-  # JOB 3: Nightly auto-settler (1 AM ET daily)
+  # JOB 3: Nightly settler + snapshot settlement (1 AM ET)
   # ============================================================
   settle-picks:
     runs-on: ubuntu-latest
