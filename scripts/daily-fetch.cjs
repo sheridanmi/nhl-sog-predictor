@@ -99,16 +99,30 @@ async function getTeamRoster(teamAbbrev) {
 }
 
 async function getPlayerGameLog(playerId) {
+  const mapGame = g => ({
+    date: g.gameDate, opponent: g.opponentAbbrev?.default,
+    homeAway: g.homeRoadFlag === 'H' ? 'home' : 'away',
+    goals: g.goals || 0, assists: g.assists || 0, shots: g.shots || 0,
+    toi: g.toi || '0:00', toiMinutes: parseToiToMinutes(g.toi),
+    ppToi: g.powerPlayToi || '0:00', ppToiMinutes: parseToiToMinutes(g.powerPlayToi),
+  });
   try {
-    const data = await fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/${SEASON}/2`);
-    if (!data.gameLog) return [];
-    return data.gameLog.map(g => ({
-      date: g.gameDate, opponent: g.opponentAbbrev?.default,
-      homeAway: g.homeRoadFlag === 'H' ? 'home' : 'away',
-      goals: g.goals || 0, assists: g.assists || 0, shots: g.shots || 0,
-      toi: g.toi || '0:00', toiMinutes: parseToiToMinutes(g.toi),
-      ppToi: g.powerPlayToi || '0:00', ppToiMinutes: parseToiToMinutes(g.powerPlayToi),
-    }));
+    const [seg2, seg1] = await Promise.allSettled([
+      fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/${SEASON}/2`),
+      fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/${SEASON}/1`),
+    ]);
+    const games2 = seg2.status === 'fulfilled' ? (seg2.value.gameLog || []) : [];
+    const games1 = seg1.status === 'fulfilled' ? (seg1.value.gameLog || []) : [];
+    const allGames = [...games2, ...games1];
+    const seen = new Set();
+    const unique = allGames.filter(g => {
+      const key = g.gameId ? String(g.gameId) : g.gameDate;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    unique.sort((a, b) => b.gameDate.localeCompare(a.gameDate));
+    return unique.map(mapGame);
   } catch (e) { return []; }
 }
 
