@@ -98,7 +98,7 @@ async function getTeamRoster(teamAbbrev) {
   } catch (e) { console.error(`  Error fetching roster for ${teamAbbrev}:`, e.message); return { forwards: [], defensemen: [], goalies: [] }; }
 }
 
-async function getPlayerGameLog(playerId) {
+async function getPlayerGameLog(playerId, landingRecentGames = []) {
   const mapGame = g => ({
     date: g.gameDate, opponent: g.opponentAbbrev?.default || g.opponentAbbrev,
     homeAway: g.homeRoadFlag === 'H' ? 'home' : 'away',
@@ -132,23 +132,45 @@ async function getPlayerGameLog(playerId) {
       seen.add(key); return true;
     });
 
-    unique.sort((a, b) => b.gameDate.localeCompare(a.gameDate));
-    if (unique.length > 0) return unique.map(mapGame);
+    // Merge in landing page recent games (fills in latest games not in season endpoint)
+    const allWithLanding = [...unique];
+    for (const lg of landingRecentGames) {
+      if (!allWithLanding.find(g => g.date === lg.date)) allWithLanding.push(lg);
+    }
+    allWithLanding.sort((a, b) => b.date.localeCompare(a.date));
+    if (allWithLanding.length > 0) return allWithLanding;
   } catch (e) { /* fall through */ }
 
   try {
     const data = await fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/${SEASON}/2`);
-    if (!data.gameLog) return [];
-    return data.gameLog.sort((a,b) => b.gameDate.localeCompare(a.gameDate)).map(mapGame);
-  } catch (e) { return []; }
+    if (!data.gameLog) return landingRecentGames;
+    const mapped = data.gameLog.sort((a,b) => b.gameDate.localeCompare(a.gameDate)).map(mapGame);
+    // Merge with landing recent games
+    const merged = [...mapped];
+    for (const lg of landingRecentGames) {
+      if (!merged.find(g => g.date === lg.date)) merged.push(lg);
+    }
+    merged.sort((a, b) => b.date.localeCompare(a.date));
+    return merged;
+  } catch (e) { return landingRecentGames; }
 }
 
 async function getPlayerInfo(playerId) {
   try {
     const data = await fetchJSON(`${NHL_BASE}/player/${playerId}/landing`);
+    // Extract recent games from landing page (always has current season recent games)
+    const recentGames = (data.last5Games || []).map(g => ({
+      date: g.gameDate,
+      opponent: g.opponentAbbrev?.default || g.opponentAbbrev,
+      homeAway: g.homeRoadFlag === 'H' ? 'home' : 'away',
+      goals: g.goals || 0, assists: g.assists || 0, shots: g.shots || 0,
+      toi: g.toi || '0:00', toiMinutes: parseToiToMinutes(g.toi),
+      ppToi: g.powerPlayToi || '0:00', ppToiMinutes: parseToiToMinutes(g.powerPlayToi),
+    }));
     return {
       id: data.playerId, fullName: `${data.firstName?.default} ${data.lastName?.default}`,
       team: data.currentTeamAbbrev, position: data.position, headshot: data.headshot,
+      recentGames,
     };
   } catch (e) { return null; }
 }
@@ -212,8 +234,8 @@ const WEIGHTS = {
 function runSimulation(gameLog, homeAway, matchup) {
   const allSOG = gameLog.map(g => g.shots);
   const seasonAvg = mean(allSOG);
-  const last5 = gameLog.slice(-5);
-  const last10 = gameLog.slice(-10);
+  const last5 = gameLog.slice(0, 5);   // newest first, so first 5 = most recent
+  const last10 = gameLog.slice(0, 10); // newest first, so first 10 = most recent
   const last5Avg = mean(last5.map(g => g.shots));
   const last10Avg = mean(last10.map(g => g.shots));
   const avgTOI = mean(gameLog.map(g => g.toiMinutes));
@@ -368,7 +390,8 @@ async function main() {
         const batch = skaters.slice(i, i + 5);
         const results = await Promise.all(batch.map(async (sk) => {
           try {
-            const [gl, info] = await Promise.all([getPlayerGameLog(sk.id), getPlayerInfo(sk.id)]);
+            const info = await getPlayerInfo(sk.id);
+            const gl = await getPlayerGameLog(sk.id, info?.recentGames || []);
             if (!gl || gl.length < 5) return null;
             totalPlayers++;
 
