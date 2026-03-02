@@ -412,7 +412,7 @@ async function main() {
               id: sk.id, name: sk.fullName, team, opponent: opp, homeAway: side,
               position: sk.position, headshot: sk.headshot,
               gameId: game.id, gameTime: game.startTime,
-              gameLog: gl.slice(-20), seasonAvgSOG: round(avgSOG, 2),
+              gameLog: gl.slice(0, 20), seasonAvgSOG: round(avgSOG, 2),
               simulation: sim,
               odds: odds ? { line: odds.line, overOdds: odds.overOdds, underOdds: odds.underOdds, bookmaker: odds.bookmakerTitle || odds.bookmaker } : null,
               edge, edgeValue: edge?.edge || -999, hasEdge: edge?.isPlayable || false,
