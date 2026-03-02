@@ -99,30 +99,36 @@ async function getTeamRoster(teamAbbrev) {
 }
 
 async function getPlayerGameLog(playerId) {
-  const mapGame = g => ({
-    date: g.gameDate, opponent: g.opponentAbbrev?.default,
-    homeAway: g.homeRoadFlag === 'H' ? 'home' : 'away',
-    goals: g.goals || 0, assists: g.assists || 0, shots: g.shots || 0,
-    toi: g.toi || '0:00', toiMinutes: parseToiToMinutes(g.toi),
-    ppToi: g.powerPlayToi || '0:00', ppToiMinutes: parseToiToMinutes(g.powerPlayToi),
-  });
   try {
-    const [seg2, seg1] = await Promise.allSettled([
-      fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/${SEASON}/2`),
-      fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/${SEASON}/1`),
-    ]);
-    const games2 = seg2.status === 'fulfilled' ? (seg2.value.gameLog || []) : [];
-    const games1 = seg1.status === 'fulfilled' ? (seg1.value.gameLog || []) : [];
-    const allGames = [...games2, ...games1];
-    const seen = new Set();
-    const unique = allGames.filter(g => {
-      const key = g.gameId ? String(g.gameId) : g.gameDate;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    unique.sort((a, b) => b.gameDate.localeCompare(a.gameDate));
-    return unique.map(mapGame);
+    // Stats REST API returns ALL games this season with no 20-game cap
+    const url = `https://api.nhle.com/stats/rest/en/skater/gamelogs?cayenneExp=playerId%3D${playerId}%20and%20seasonId%3D20252026%20and%20gameTypeId%3D2&sort=gameDate&dir=DESC&limit=82`;
+    const data = await fetchJSON(url);
+    const games = data.data || [];
+    if (games.length > 0) {
+      return games.map(g => ({
+        date: g.gameDate,
+        opponent: g.opponentAbbrev,
+        homeAway: g.isHome ? 'home' : 'away',
+        goals: g.goals || 0, assists: g.assists || 0, shots: g.shots || 0,
+        toi: g.timeOnIce || '0:00', toiMinutes: parseToiToMinutes(g.timeOnIce),
+        ppToi: g.ppTimeOnIce || '0:00', ppToiMinutes: parseToiToMinutes(g.ppTimeOnIce),
+      }));
+    }
+  } catch (e) { /* fall through to original endpoint */ }
+
+  try {
+    // Fallback: original web API (capped at ~20 games but better than nothing)
+    const data = await fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/${SEASON}/2`);
+    if (!data.gameLog) return [];
+    return data.gameLog
+      .sort((a, b) => b.gameDate.localeCompare(a.gameDate))
+      .map(g => ({
+        date: g.gameDate, opponent: g.opponentAbbrev?.default,
+        homeAway: g.homeRoadFlag === 'H' ? 'home' : 'away',
+        goals: g.goals || 0, assists: g.assists || 0, shots: g.shots || 0,
+        toi: g.toi || '0:00', toiMinutes: parseToiToMinutes(g.toi),
+        ppToi: g.powerPlayToi || '0:00', ppToiMinutes: parseToiToMinutes(g.powerPlayToi),
+      }));
   } catch (e) { return []; }
 }
 
