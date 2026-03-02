@@ -5,6 +5,7 @@ on:
     - cron: '0 15 * * 0,6'   # 10:00 AM ET (Sat & Sun) — early fetch for afternoon games
     - cron: '0 22 * * *'     # 5:00 PM ET (daily)      — full fetch & deploy
     - cron: '30 23 * * *'    # 6:30 PM ET (daily)      — goalie update & redeploy
+    - cron: '30 16 * * 0,6'  # 11:30 AM ET (Sat & Sun) — goalie update for afternoon games
     - cron: '0 6 * * *'      # 1:00 AM ET (daily)      — settle picks & snapshots
   workflow_dispatch:
     inputs:
@@ -89,7 +90,10 @@ jobs:
   update-goalies:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'schedule' && github.event.schedule == '30 23 * * *') ||
+      (github.event_name == 'schedule' && (
+        github.event.schedule == '30 23 * * *' ||
+        github.event.schedule == '30 16 * * 0,6'
+      )) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'goalies')
 
     steps:
