@@ -99,25 +99,37 @@ async function getTeamRoster(teamAbbrev) {
 }
 
 async function getPlayerGameLog(playerId) {
+  // Stats REST API: timeOnIce is in SECONDS (integer), not "MM:SS" string
+  const secToMinStr = (sec) => {
+    if (!sec && sec !== 0) return '0:00';
+    const m = Math.floor(sec / 60);
+    const s = String(sec % 60).padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
   try {
-    // Stats REST API returns ALL games this season with no 20-game cap
+    // Stats REST API returns ALL games this season with no cap
     const url = `https://api.nhle.com/stats/rest/en/skater/gamelogs?cayenneExp=playerId%3D${playerId}%20and%20seasonId%3D20252026%20and%20gameTypeId%3D2&sort=gameDate&dir=DESC&limit=82`;
     const data = await fetchJSON(url);
     const games = data.data || [];
     if (games.length > 0) {
-      return games.map(g => ({
-        date: g.gameDate,
-        opponent: g.opponentAbbrev,
-        homeAway: g.isHome ? 'home' : 'away',
-        goals: g.goals || 0, assists: g.assists || 0, shots: g.shots || 0,
-        toi: g.timeOnIce || '0:00', toiMinutes: parseToiToMinutes(g.timeOnIce),
-        ppToi: g.ppTimeOnIce || '0:00', ppToiMinutes: parseToiToMinutes(g.ppTimeOnIce),
-      }));
+      return games.map(g => {
+        const toiStr = secToMinStr(g.timeOnIce);
+        const ppToiStr = secToMinStr(g.ppTimeOnIce);
+        return {
+          date: g.gameDate,
+          opponent: g.opponentAbbrev,
+          homeAway: g.isHome ? 'home' : 'away',
+          goals: g.goals || 0, assists: g.assists || 0, shots: g.shots || 0,
+          toi: toiStr, toiMinutes: parseToiToMinutes(toiStr),
+          ppToi: ppToiStr, ppToiMinutes: parseToiToMinutes(ppToiStr),
+        };
+      });
     }
   } catch (e) { /* fall through to original endpoint */ }
 
   try {
-    // Fallback: original web API (capped at ~20 games but better than nothing)
+    // Fallback: original web API
     const data = await fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/${SEASON}/2`);
     if (!data.gameLog) return [];
     return data.gameLog
