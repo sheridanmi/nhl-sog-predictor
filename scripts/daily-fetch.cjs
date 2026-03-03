@@ -71,7 +71,10 @@ function stdDev(arr) {
 // ============================================================
 
 async function getTodaysGames() {
-  const today = new Date().toISOString().split('T')[0];
+  // Use ET date so late-night UTC doesn't roll to next day
+  const etOffset = -5; // EST (use -4 for EDT)
+  const nowET = new Date(Date.now() + etOffset * 60 * 60 * 1000);
+  const today = nowET.toISOString().split('T')[0];
   console.log(`📅 Checking schedule for ${today}...`);
   const data = await fetchJSON(`${NHL_BASE}/schedule/${today}`);
   const todayData = data.gameWeek?.find(day => day.date === today);
@@ -355,8 +358,16 @@ async function main() {
   // 3. Get betting odds
   console.log('\n💰 Fetching betting lines...');
   const events = await getOddsEvents();
-  const today = new Date().toISOString().split('T')[0];
-  const todayEvents = events.filter(e => e.commence_time?.split('T')[0] === today);
+  // Use ET date (UTC-5 standard / UTC-4 daylight) to match game times
+  const etOffset = -5; // EST; use -4 for EDT (adjust if needed)
+  const nowET = new Date(Date.now() + etOffset * 60 * 60 * 1000);
+  const todayET = nowET.toISOString().split('T')[0];
+  // Also accept games whose commence_time falls within today ET (7PM ET = midnight UTC next day)
+  const todayEvents = events.filter(e => {
+    if (!e.commence_time) return false;
+    const gameET = new Date(new Date(e.commence_time).getTime() + etOffset * 60 * 60 * 1000);
+    return gameET.toISOString().split('T')[0] === todayET;
+  });
   const eventsToFetch = todayEvents.length > 0 ? todayEvents : events.slice(0, 8);
 
   const oddsMap = {};
