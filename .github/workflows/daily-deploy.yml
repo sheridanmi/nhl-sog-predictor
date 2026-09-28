@@ -114,7 +114,15 @@ jobs:
           curl -o public/latest-analysis.json https://sog-edge-finder-ms.web.app/latest-analysis.json
           echo "✅ Downloaded latest-analysis.json ($(wc -c < public/latest-analysis.json) bytes)"
 
+      - name: Install firebase-admin
+        run: npm install firebase-admin --no-save
+
       - name: Run goalie updater
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
+          FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
         run: node scripts/update-goalies.cjs
 
       - name: Build app
