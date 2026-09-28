@@ -19,7 +19,7 @@ if (!ODDS_API_KEY) {
   console.error('❌ ODDS_API_KEY environment variable is not set. Refusing to run without it.');
   process.exit(1);
 }
-const SEASON = '20252026';
+const SEASON = '20262027';
 
 const fs = require('fs');
 const path = require('path');
@@ -126,8 +126,7 @@ async function getPlayerGameLog(playerId, landingRecentGames = []) {
 
     const seasonGames = seasonRes.status === 'fulfilled' ? (seasonRes.value?.gameLog || []) : [];
     const nowGames = nowRes.status === 'fulfilled'
-      ? (nowRes.value?.gameLog || []).filter(g => !g.seasonId || g.seasonId === 20252026 || String(g.seasonId) === '20252026')
-      : [];
+      ? (nowRes.value?.gameLog || []).filter(g => !g.seasonId || g.seasonId === 20262027 || String(g.seasonId) === '20262027')      : [];
 
     const allGames = [...seasonGames, ...nowGames];
 
