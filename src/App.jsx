@@ -3,6 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaCh
 import AlertBanner from './components/AlertBanner.jsx';
 import WeightTuner from './components/WeightTuner.jsx';
 import ResultsTracker from './components/ResultsTracker.jsx';
+import BacktestAnalyzer from './components/BacktestAnalyzer.jsx';
 import { suggestWeightAdjustments, getAllPicks } from './services/firestoreService.js';
 
 const MONO = "'JetBrains Mono', 'Fira Code', monospace";
@@ -263,7 +264,7 @@ export default function App() {
   const [filterEdge, setFilterEdge] = useState("all");
   const [sortBy, setSortBy] = useState("edge");
   const [dataSource, setDataSource] = useState(null);
-  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard | tracker | weights
+  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard | tracker | weights | backtest
   const [customWeights, setCustomWeights] = useState(null);
   const [weightSuggestions, setWeightSuggestions] = useState(null);
   const [recalculating, setRecalculating] = useState(false);
@@ -414,6 +415,7 @@ export default function App() {
             <NavTab active={activeTab === 'weights'} onClick={() => setActiveTab('weights')}>
               ⚙ Weights{weightSuggestions && Object.keys(weightSuggestions).length > 0 ? ' 💡' : ''}
             </NavTab>
+            <NavTab active={activeTab === 'backtest'} onClick={() => setActiveTab('backtest')}>📈 Backtest</NavTab>
           </div>
         )}
 
@@ -516,6 +518,9 @@ export default function App() {
                 )}
               </div>
             )}
+
+            {/* Backtest Analyzer tab */}
+            {activeTab === 'backtest' && <BacktestAnalyzer />}
           </>
         )}
       </div>
