@@ -126,7 +126,8 @@ async function getPlayerGameLog(playerId, landingRecentGames = []) {
 
     const seasonGames = seasonRes.status === 'fulfilled' ? (seasonRes.value?.gameLog || []) : [];
     const nowGames = nowRes.status === 'fulfilled'
-      ? (nowRes.value?.gameLog || []).filter(g => !g.seasonId || g.seasonId === 20262027 || String(g.seasonId) === '20262027')      : [];
+      ? (nowRes.value?.gameLog || []).filter(g => !g.seasonId || g.seasonId === 20262027 || String(g.seasonId) === '20262027')
+      : [];
 
     const allGames = [...seasonGames, ...nowGames];
 
@@ -269,6 +270,62 @@ async function getGameTotals() {
 }
 
 // ============================================================
+// NEGATIVE BINOMIAL SAMPLING (Poisson-Gamma mixture)
+// SOG is a bounded-below, right-skewed count — a Negative Binomial
+// fits its shape far better than a clamped Normal ever could.
+// ============================================================
+
+function sampleStdNormal() {
+  const u1 = Math.random(), u2 = Math.random();
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+// Marsaglia-Tsang gamma sampler (shape > 0, given scale = theta)
+function sampleGamma(shape, scale) {
+  if (shape < 1) {
+    const u = Math.random();
+    return sampleGamma(shape + 1, scale) * Math.pow(u, 1 / shape);
+  }
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  while (true) {
+    let x, v;
+    do { x = sampleStdNormal(); v = 1 + c * x; } while (v <= 0);
+    v = v * v * v;
+    const u = Math.random();
+    if (u < 1 - 0.0331 * x * x * x * x) return d * v * scale;
+    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v * scale;
+  }
+}
+
+// Knuth's algorithm; falls back to a normal approximation for very large lambda
+function samplePoisson(lambda) {
+  if (lambda <= 0) return 0;
+  if (lambda < 30) {
+    const L = Math.exp(-lambda);
+    let k = 0, p = 1;
+    do { k++; p *= Math.random(); } while (p > L);
+    return k - 1;
+  }
+  return Math.max(0, Math.round(lambda + Math.sqrt(lambda) * sampleStdNormal()));
+}
+
+// Estimate the NB overdispersion parameter r from a player's raw sample mean/variance.
+// r = Infinity means "no overdispersion detected" -> falls back to plain Poisson shape.
+function estimateNBDispersion(sampleMean, sampleVariance) {
+  if (sampleMean <= 0 || sampleVariance <= sampleMean) return Infinity;
+  const r = (sampleMean * sampleMean) / (sampleVariance - sampleMean);
+  return Math.max(0.5, r); // floor keeps tiny samples from blowing up the tail
+}
+
+// One draw from NB(mean, r) via its Poisson-Gamma mixture representation
+function sampleNegativeBinomial(distMean, r) {
+  if (!isFinite(r)) return samplePoisson(distMean);
+  const lambda = sampleGamma(r, distMean / r);
+  return samplePoisson(lambda);
+}
+
+// ============================================================
 // MONTE CARLO SIMULATION
 // ============================================================
 
@@ -317,11 +374,11 @@ function runSimulation(gameLog, homeAway, matchup) {
   proj = Math.max(0.5, proj);
 
   const sd = stdDev(allSOG);
+  const rawVariance = sd * sd;
+  const nbDispersion = estimateNBDispersion(seasonAvg, rawVariance);
   const results = [];
   for (let i = 0; i < 10000; i++) {
-    const u1 = Math.random(), u2 = Math.random();
-    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    results.push(Math.max(0, Math.round(proj + z * sd)));
+    results.push(sampleNegativeBinomial(proj, nbDispersion));
   }
 
   const distribution = {};
@@ -334,7 +391,8 @@ function runSimulation(gameLog, homeAway, matchup) {
   }
 
   return {
-    projection: round(proj, 2), stdDev: round(sd, 2), distribution, probabilities,
+    projection: round(proj, 2), stdDev: round(sd, 2), nbDispersion: isFinite(nbDispersion) ? round(nbDispersion, 3) : null,
+    distribution, probabilities,
     factors: {
       seasonAvg: round(seasonAvg, 2), last5Avg: round(last5Avg, 2), last10Avg: round(last10Avg, 2),
       homeAvg: round(homeAvg, 2), awayAvg: round(awayAvg, 2), homeAwayAdj: round(haAdj, 2),
