@@ -133,3 +133,19 @@ export function calcSplitStats(snapshots, keyFn, labelFn = k => k) {
     }))
     .sort((a, b) => b.total - a.total);
 }
+
+// CLV (closing line value): did the market move toward your entry price after
+// you got it, or away from it? Positive average CLV is the standard proxy for
+// "you have a real edge" independent of whether any individual pick won — it
+// doesn't wait for the game to finish the way win-rate does.
+export function calcCLVStats(snapshots) {
+  const withCLV = snapshots.filter(s => s.clv != null);
+  if (!withCLV.length) return { count: 0, avgCLV: null, positiveRate: null };
+  const avgCLV = withCLV.reduce((sum, s) => sum + s.clv, 0) / withCLV.length;
+  const positive = withCLV.filter(s => s.clv > 0).length;
+  return {
+    count: withCLV.length,
+    avgCLV: +avgCLV.toFixed(2),
+    positiveRate: +((positive / withCLV.length) * 100).toFixed(1),
+  };
+}
