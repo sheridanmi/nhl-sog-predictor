@@ -316,7 +316,7 @@ export default function App() {
       setDataSource('live');
       if (result.error) setError(result.error);
     } catch (err) {
-      setError('No data available. Run: node scripts/daily-fetch.js');
+      setError('No data available. Run: node scripts/daily-fetch.cjs');
     } finally {
       setLoading(false);
     }
@@ -366,7 +366,7 @@ export default function App() {
       <h1 style={{ fontFamily: DISPLAY, fontSize: 24, fontWeight: 800, color: "#f1f5f9" }}>No Data Available</h1>
       <p style={{ fontFamily: MONO, fontSize: 13, color: "#64748b", textAlign: "center", maxWidth: 500, lineHeight: 1.6 }}>
         {error || "Run the daily script to generate today's analysis:"}<br/><br/>
-        <code style={{ background: "#1e293b", padding: "8px 14px", borderRadius: 6, display: "inline-block" }}>node scripts/daily-fetch.js</code>
+        <code style={{ background: "#1e293b", padding: "8px 14px", borderRadius: 6, display: "inline-block" }}>node scripts/daily-fetch.cjs</code>
       </p>
     </div>
   );
