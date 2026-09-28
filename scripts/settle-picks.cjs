@@ -94,7 +94,7 @@ async function getGameSOGMap(gameId) {
 
 async function getPlayerActualSOG(playerId, gameDate) {
   try {
-    const data = await fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/20252026/2`);
+    const data = await fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/20262027/2`);
     if (!data.gameLog) return null;
     const game = data.gameLog.find(g => g.gameDate === gameDate);
     return game?.shots ?? null;
