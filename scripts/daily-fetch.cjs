@@ -488,18 +488,36 @@ async function main() {
   });
   const eventsToFetch = todayEvents.length > 0 ? todayEvents : events.slice(0, 8);
 
-  const oddsMap = {};
+  const oddsByPlayer = {};
   for (const event of eventsToFetch) {
     console.log(`  ${event.away_team} @ ${event.home_team}`);
     const props = await getSOGProps(event.id);
     for (const p of props) {
-      if (!oddsMap[p.playerName] || p.bookmaker === 'draftkings') {
-        oddsMap[p.playerName] = p;
-      }
+      if (!oddsByPlayer[p.playerName]) oddsByPlayer[p.playerName] = [];
+      oddsByPlayer[p.playerName].push(p);
     }
     await sleep(500);
   }
-  console.log(`  Found lines for ${Object.keys(oddsMap).length} players`);
+
+  // Line shop: for each player, use the CONSENSUS line (the one most books agree
+  // on, to avoid chasing a single outlier line), then take the best available
+  // price among the books offering that line. Previously this just kept
+  // whichever book DraftKings happened to be, discarding better prices elsewhere.
+  const oddsMap = {};
+  for (const [name, offers] of Object.entries(oddsByPlayer)) {
+    const withOver = offers.filter(o => o.overOdds != null && o.line != null);
+    if (!withOver.length) continue;
+    const byLine = {};
+    for (const o of withOver) (byLine[o.line] = byLine[o.line] || []).push(o);
+    let consensusLine = null, maxCount = 0;
+    for (const [line, arr] of Object.entries(byLine)) {
+      if (arr.length > maxCount) { maxCount = arr.length; consensusLine = parseFloat(line); }
+    }
+    const candidates = byLine[consensusLine];
+    const best = candidates.reduce((a, b) => (b.overOdds > a.overOdds ? b : a));
+    oddsMap[name] = { ...best, booksOffering: withOver.length };
+  }
+  console.log(`  Found lines for ${Object.keys(oddsMap).length} players (line-shopped across ${new Set(Object.values(oddsByPlayer).flat().map(o => o.bookmaker)).size} books)`);
 
   const gameTotalsRaw = await getGameTotals();
   const gameTotals = {}; // gameId -> total, matched by team names
