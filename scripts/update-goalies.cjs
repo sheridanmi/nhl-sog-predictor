@@ -119,6 +119,57 @@ async function getProbableStarter(teamAbbrev) {
 }
 
 // ============================================================
+// NEGATIVE BINOMIAL SAMPLING (Poisson-Gamma mixture)
+// Same shape used in daily-fetch.cjs — kept consistent so a goalie-triggered
+// recalc doesn't silently switch back to a Normal distribution.
+// ============================================================
+
+function sampleStdNormal() {
+  const u1 = Math.random(), u2 = Math.random();
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+function sampleGamma(shape, scale) {
+  if (shape < 1) {
+    const u = Math.random();
+    return sampleGamma(shape + 1, scale) * Math.pow(u, 1 / shape);
+  }
+  const d = shape - 1 / 3;
+  const c = 1 / Math.sqrt(9 * d);
+  while (true) {
+    let x, v;
+    do { x = sampleStdNormal(); v = 1 + c * x; } while (v <= 0);
+    v = v * v * v;
+    const u = Math.random();
+    if (u < 1 - 0.0331 * x * x * x * x) return d * v * scale;
+    if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v * scale;
+  }
+}
+
+function samplePoisson(lambda) {
+  if (lambda <= 0) return 0;
+  if (lambda < 30) {
+    const L = Math.exp(-lambda);
+    let k = 0, p = 1;
+    do { k++; p *= Math.random(); } while (p > L);
+    return k - 1;
+  }
+  return Math.max(0, Math.round(lambda + Math.sqrt(lambda) * sampleStdNormal()));
+}
+
+function estimateNBDispersion(sampleMean, sampleVariance) {
+  if (sampleMean <= 0 || sampleVariance <= sampleMean) return Infinity;
+  const r = (sampleMean * sampleMean) / (sampleVariance - sampleMean);
+  return Math.max(0.5, r);
+}
+
+function sampleNegativeBinomial(distMean, r) {
+  if (!isFinite(r)) return samplePoisson(distMean);
+  const lambda = sampleGamma(r, distMean / r);
+  return samplePoisson(lambda);
+}
+
+// ============================================================
 // RECALCULATE EDGE with updated goalie data
 // ============================================================
 
@@ -134,13 +185,17 @@ function recalcEdge(analysis, newOppGoalieSV) {
   const projAdjustment = newGoalieFactor - oldGoalieFactor;
   const newProjection = Math.max(0.5, round(simulation.projection + projAdjustment, 2));
 
-  // Recalculate probabilities with adjusted projection
+  // Recalculate probabilities with adjusted projection, same NB shape as the original sim.
+  // nbDispersion is explicitly stored as null when the original sim found no overdispersion
+  // (Poisson shape) — only re-derive it here for legacy files that predate this field.
+  const meanForDispersion = simulation.factors?.seasonAvg || newProjection;
   const sd = simulation.stdDev || 1.5;
+  const nbDispersion = 'nbDispersion' in simulation
+    ? (simulation.nbDispersion == null ? Infinity : simulation.nbDispersion)
+    : estimateNBDispersion(meanForDispersion, sd * sd);
   const results = [];
   for (let i = 0; i < 10000; i++) {
-    const u1 = Math.random(), u2 = Math.random();
-    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-    results.push(Math.max(0, Math.round(newProjection + z * sd)));
+    results.push(sampleNegativeBinomial(newProjection, nbDispersion));
   }
 
   const probabilities = {};
