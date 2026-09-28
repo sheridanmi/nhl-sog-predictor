@@ -62,7 +62,7 @@ export async function getTeamRoster(teamAbbrev) {
   }
 }
 
-export async function getPlayerGameLog(playerId, season = '20252026') {
+export async function getPlayerGameLog(playerId, season = '20262027') {
   try {
     const res = await fetch(`${NHL_BASE}/player/${playerId}/game-log/${season}/2`);
     const data = await res.json();
@@ -166,7 +166,7 @@ export async function getStandings() {
   }
 }
 
-export async function fetchTeamPlayersForTonight(teamAbbrev, opponentAbbrev, homeAway, season = '20252026') {
+export async function fetchTeamPlayersForTonight(teamAbbrev, opponentAbbrev, homeAway, season = '20262027') {
   const roster = await getTeamRoster(teamAbbrev);
   const skaters = [...roster.forwards, ...roster.defensemen];
   const playerData = [];
