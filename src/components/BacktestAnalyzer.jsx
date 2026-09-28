@@ -5,7 +5,7 @@ import {
 } from 'recharts';
 import {
   getSettledSnapshots, getSnapshotSummaries,
-  calcOverallStats, calcEdgeBucketStats, calcCalibrationCurve, calcSplitStats,
+  calcOverallStats, calcEdgeBucketStats, calcCalibrationCurve, calcSplitStats, calcCLVStats,
 } from '../services/backtestService.js';
 
 const MONO = "'JetBrains Mono', 'Fira Code', monospace";
@@ -103,14 +103,21 @@ export default function BacktestAnalyzer() {
   const byPosition = calcSplitStats(snapshots, s => s.position || 'Unknown');
   const byHomeAway = calcSplitStats(snapshots, s => (s.homeAway === 'home' ? 'Home' : s.homeAway === 'away' ? 'Away' : null));
   const byB2B = calcSplitStats(snapshots, s => (s.isBackToBack ? 'B2B' : 'Normal Rest'));
+  const clvStats = calcCLVStats(snapshots);
 
   return (
     <div style={{ animation: 'fadeIn 0.25s ease' }}>
       {/* Overview */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 20 }}>
         <Card label="SETTLED PICKS" value={overall.decided} sub={`${overall.totalSnapshots} total snapshots`} />
         <Card label="WIN RATE" value={`${overall.winRate}%`} color={overall.winRate >= 55 ? '#4ade80' : overall.winRate >= 50 ? '#facc15' : '#ef4444'} />
         <Card label="ROI / UNIT" value={`${overall.roi > 0 ? '+' : ''}${overall.roi}%`} color={overall.roi > 0 ? '#4ade80' : '#ef4444'} sub="flat -110 stake basis" />
+        <Card
+          label="AVG CLV"
+          value={clvStats.avgCLV != null ? `${clvStats.avgCLV > 0 ? '+' : ''}${clvStats.avgCLV}pts` : '—'}
+          color={clvStats.avgCLV > 0 ? '#4ade80' : clvStats.avgCLV < 0 ? '#ef4444' : undefined}
+          sub={clvStats.count > 0 ? `${clvStats.positiveRate}% beat closing (n=${clvStats.count})` : 'no closing lines captured yet'}
+        />
         <Card label="NIGHTS OF DATA" value={summaries.length} sub={summaries[0]?.gameDate ? `since ${summaries[0].gameDate}` : ''} />
       </div>
 
