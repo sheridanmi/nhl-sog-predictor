@@ -13,11 +13,31 @@
  */
 
 const NHL_BASE = 'https://api-web.nhle.com/v1';
+const ODDS_BASE = 'https://api.the-odds-api.com/v4';
+const SPORT = 'icehockey_nhl';
+const ODDS_API_KEY = process.env.ODDS_API_KEY;
 
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
+
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore, Timestamp } = require('firebase-admin/firestore');
+
+// Firebase is optional here — if creds aren't set, CLV capture is skipped
+// (with a warning) but goalie updates still run normally.
+let db = null;
+if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+  const app = initializeApp({
+    credential: cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    }),
+  });
+  db = getFirestore(app);
+}
 
 // ============================================================
 // HTTP FETCH HELPER
@@ -47,6 +67,81 @@ function fetchJSON(url) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function round(num, dec) { return +num.toFixed(dec); }
+
+// ============================================================
+// ODDS FETCHING (for closing-line / CLV capture)
+// ============================================================
+
+async function getOddsEvents() {
+  if (!ODDS_API_KEY) return [];
+  try {
+    return await fetchJSON(`${ODDS_BASE}/sports/${SPORT}/events?apiKey=${ODDS_API_KEY}&dateFormat=iso`);
+  } catch (e) { console.error('  Error fetching odds events:', e.message); return []; }
+}
+
+async function getSOGProps(eventId) {
+  if (!ODDS_API_KEY) return [];
+  try {
+    const data = await fetchJSON(`${ODDS_BASE}/sports/${SPORT}/events/${eventId}/odds?apiKey=${ODDS_API_KEY}&regions=us&markets=player_shots_on_goal&oddsFormat=american&dateFormat=iso`);
+    const props = [];
+    if (data.bookmakers) {
+      for (const bk of data.bookmakers) {
+        const mkt = bk.markets?.find(m => m.key === 'player_shots_on_goal');
+        if (!mkt) continue;
+        const outcomes = {};
+        for (const o of mkt.outcomes) {
+          if (!outcomes[o.description]) outcomes[o.description] = { playerName: o.description, bookmaker: bk.key, bookmakerTitle: bk.title };
+          if (o.name === 'Over') { outcomes[o.description].overOdds = o.price; outcomes[o.description].line = o.point; }
+          if (o.name === 'Under') { outcomes[o.description].underOdds = o.price; }
+        }
+        props.push(...Object.values(outcomes));
+      }
+    }
+    return props;
+  } catch (e) { console.error(`  Error fetching SOG props for ${eventId}:`, e.message); return []; }
+}
+
+// Same consensus-line-then-best-price logic as daily-fetch.cjs, kept in sync manually
+function shopLines(oddsByPlayer) {
+  const oddsMap = {};
+  for (const [name, offers] of Object.entries(oddsByPlayer)) {
+    const withOver = offers.filter(o => o.overOdds != null && o.line != null);
+    if (!withOver.length) continue;
+    const byLine = {};
+    for (const o of withOver) (byLine[o.line] = byLine[o.line] || []).push(o);
+    let consensusLine = null, maxCount = 0;
+    for (const [line, arr] of Object.entries(byLine)) {
+      if (arr.length > maxCount) { maxCount = arr.length; consensusLine = parseFloat(line); }
+    }
+    const best = byLine[consensusLine].reduce((a, b) => (b.overOdds > a.overOdds ? b : a));
+    oddsMap[name] = { ...best, booksOffering: withOver.length };
+  }
+  return oddsMap;
+}
+
+async function fetchClosingOdds(games) {
+  const events = await getOddsEvents();
+  const relevant = events.filter(e =>
+    games.some(g =>
+      e.home_team?.toLowerCase().includes(g.homeTeam.name?.toLowerCase() || '~~~') ||
+      e.away_team?.toLowerCase().includes(g.awayTeam.name?.toLowerCase() || '~~~')
+    )
+  );
+  const oddsByPlayer = {};
+  for (const event of relevant) {
+    const props = await getSOGProps(event.id);
+    for (const p of props) {
+      if (!oddsByPlayer[p.playerName]) oddsByPlayer[p.playerName] = [];
+      oddsByPlayer[p.playerName].push(p);
+    }
+    await sleep(400);
+  }
+  return shopLines(oddsByPlayer);
+}
+
+function americanToImpliedProb(odds) {
+  return odds < 0 ? Math.abs(odds) / (Math.abs(odds) + 100) : 100 / (odds + 100);
+}
 
 // ============================================================
 // GOALIE FETCHING
@@ -394,6 +489,56 @@ async function main() {
     console.log('💾 Also updated dist/latest-analysis.json');
   }
 
+  // ── CLV: capture closing lines and diff against opening lines ──────────
+  // This runs close to game time, making it a reasonable proxy for the
+  // closing line without needing a separate per-game-start job.
+  console.log('\n💹 Capturing closing lines for CLV tracking...');
+  let clvUpdated = 0;
+  try {
+    if (!ODDS_API_KEY) {
+      console.log('  ⚠️  No ODDS_API_KEY set — skipping CLV capture.');
+    } else if (!db) {
+      console.log('  ⚠️  No Firebase credentials set for this job — skipping CLV capture.');
+    } else {
+      const closingOdds = await fetchClosingOdds(games);
+      console.log(`  Found closing lines for ${Object.keys(closingOdds).length} players`);
+
+      const gameDate = (analysis.timestamp ? new Date(analysis.timestamp) : new Date()).toISOString().split('T')[0];
+      const snap = await db.collection('snapshots').where('gameDate', '==', gameDate).get();
+      const docsByPlayerId = {};
+      snap.docs.forEach(d => { docsByPlayerId[d.data().playerId] = d; });
+
+      const batch = db.batch();
+      let batchCount = 0;
+      for (const player of updatedAnalyses) {
+        if (!player.odds || player.odds.line == null) continue;
+        const closing = closingOdds[player.name];
+        if (!closing) continue;
+        const doc = docsByPlayerId[player.id];
+        if (!doc) continue;
+
+        const openingImplied = americanToImpliedProb(player.odds.overOdds);
+        const closingImplied = americanToImpliedProb(closing.overOdds);
+        const clv = round((closingImplied - openingImplied) * 100, 2); // positive = market moved toward you after your bet
+
+        batch.update(doc.ref, {
+          closingLine: closing.line,
+          closingOverOdds: closing.overOdds,
+          closingBookmaker: closing.bookmakerTitle || closing.bookmaker,
+          clv,
+          clvCapturedAt: Timestamp.now(),
+        });
+        clvUpdated++;
+        batchCount++;
+        if (batchCount === 499) { await batch.commit(); batchCount = 0; }
+      }
+      if (batchCount > 0) await batch.commit();
+      console.log(`  ✅ CLV captured for ${clvUpdated} snapshots`);
+    }
+  } catch (e) {
+    console.error('  ⚠️  CLV capture failed (non-fatal, goalie update above still succeeded):', e.message);
+  }
+
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log('');
   console.log('╔══════════════════════════════════════════╗');
@@ -402,6 +547,7 @@ async function main() {
   console.log(`║  👤 ${String(updated).padEnd(3)} players updated               ║`);
   console.log(`║  📈 ${String(edgeChanges).padEnd(3)} edge changes > 1%            ║`);
   console.log(`║  🎯 ${String(newEdgesFound).padEnd(3)} total playable edges         ║`);
+  console.log(`║  💹 ${String(clvUpdated).padEnd(3)} CLV snapshots captured       ║`);
   console.log(`║  ⏱️  ${elapsed}s elapsed                       ║`);
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
