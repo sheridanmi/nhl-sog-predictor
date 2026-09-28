@@ -14,7 +14,11 @@
 const NHL_BASE = 'https://api-web.nhle.com/v1';
 const ODDS_BASE = 'https://api.the-odds-api.com/v4';
 const SPORT = 'icehockey_nhl';
-const ODDS_API_KEY = process.env.ODDS_API_KEY || '9dadc0dad7194fc979285f4023e50ffc';
+const ODDS_API_KEY = process.env.ODDS_API_KEY;
+if (!ODDS_API_KEY) {
+  console.error('❌ ODDS_API_KEY environment variable is not set. Refusing to run without it.');
+  process.exit(1);
+}
 const SEASON = '20252026';
 
 const fs = require('fs');
@@ -193,6 +197,29 @@ async function getTeamStats(teamAbbrev) {
   } catch (e) { return { teamAbbrev, goalies: [] }; }
 }
 
+async function getTeamsPlayedYesterday() {
+  // Use ET date, same offset logic as getTodaysGames, so "yesterday" lines up with tonight's ET slate
+  const etOffset = -5; // EST; use -4 for EDT
+  const nowET = new Date(Date.now() + etOffset * 60 * 60 * 1000);
+  const yestET = new Date(nowET);
+  yestET.setDate(yestET.getDate() - 1);
+  const dateStr = yestET.toISOString().split('T')[0];
+  try {
+    const data = await fetchJSON(`${NHL_BASE}/schedule/${dateStr}`);
+    const dayData = data.gameWeek?.find(d => d.date === dateStr);
+    if (!dayData) return new Set();
+    const teams = new Set();
+    for (const g of dayData.games) {
+      teams.add(g.homeTeam.abbrev);
+      teams.add(g.awayTeam.abbrev);
+    }
+    return teams;
+  } catch (e) {
+    console.error('  Error fetching yesterday schedule for B2B check:', e.message);
+    return new Set();
+  }
+}
+
 // ============================================================
 // ODDS API FUNCTIONS
 // ============================================================
@@ -222,6 +249,24 @@ async function getSOGProps(eventId) {
     }
     return props;
   } catch (e) { console.error(`  Error fetching SOG props for ${eventId}:`, e.message); return []; }
+}
+
+async function getGameTotals() {
+  // Single call for the whole slate's O/U totals — cheap on quota
+  try {
+    const data = await fetchJSON(`${ODDS_BASE}/sports/${SPORT}/odds?apiKey=${ODDS_API_KEY}&regions=us&markets=totals&oddsFormat=american`);
+    const totals = {};
+    if (Array.isArray(data)) {
+      for (const ev of data) {
+        const t = ev.bookmakers?.[0]?.markets?.[0]?.outcomes?.[0]?.point;
+        if (t) totals[`${ev.away_team}|${ev.home_team}`] = t;
+      }
+    }
+    return totals;
+  } catch (e) {
+    console.error('  Error fetching game totals:', e.message);
+    return {};
+  }
 }
 
 // ============================================================
@@ -265,6 +310,11 @@ function runSimulation(gameLog, homeAway, matchup) {
 
   const oppSV = matchup.oppGoalieSV || 0.908;
   proj += (0.908 - oppSV) * 10 * WEIGHTS.oppGoalieSVPct * 10;
+
+  const avgGameTotal = 6.0;
+  const vegasTotal = matchup.vegasTotal || avgGameTotal;
+  proj += proj * ((vegasTotal - avgGameTotal) / avgGameTotal) * (WEIGHTS.vegasTotal * 5);
+
   proj = Math.max(0.5, proj);
 
   const sd = stdDev(allSOG);
@@ -292,6 +342,7 @@ function runSimulation(gameLog, homeAway, matchup) {
       oppSAPerGame: round(oppSA, 1), avgTOI: round(avgTOI, 1), recentTOI: round(recentTOI, 1),
       avgPPTOI: round(avgPPTOI, 1), isBackToBack: !!matchup.isB2B,
       oppGoalie: matchup.oppGoalieName || 'Unknown', oppGoalieSV: matchup.oppGoalieSV || null,
+      vegasTotal: round(vegasTotal, 1),
       last5Direction: last5Avg > seasonAvg ? 'positive' : last5Avg < seasonAvg - 0.3 ? 'negative' : 'neutral',
       oppDirection: oppSA > 30 ? 'positive' : oppSA < 28 ? 'negative' : 'neutral',
       toiDirection: recentTOI > avgTOI + 0.5 ? 'positive' : recentTOI < avgTOI - 0.5 ? 'negative' : 'neutral',
@@ -335,7 +386,17 @@ async function main() {
     return;
   }
 
-  // 2. Get opponent context for each game
+  // 2. Back-to-back detection
+  console.log('🔄 Checking back-to-backs...');
+  const playedYesterday = await getTeamsPlayedYesterday();
+  const b2bTeams = new Set();
+  for (const game of games) {
+    if (playedYesterday.has(game.awayTeam.abbrev)) b2bTeams.add(game.awayTeam.abbrev);
+    if (playedYesterday.has(game.homeTeam.abbrev)) b2bTeams.add(game.homeTeam.abbrev);
+  }
+  if (b2bTeams.size) console.log(`  B2B teams tonight: ${[...b2bTeams].join(', ')}`);
+
+  // 3. Get opponent context for each game
   console.log('📊 Fetching team stats...');
   const oppContext = {};
   for (const game of games) {
@@ -355,7 +416,7 @@ async function main() {
     };
   }
 
-  // 3. Get betting odds
+  // 4. Get betting odds + game totals
   console.log('\n💰 Fetching betting lines...');
   const events = await getOddsEvents();
   // Use ET date (UTC-5 standard / UTC-4 daylight) to match game times
@@ -383,7 +444,20 @@ async function main() {
   }
   console.log(`  Found lines for ${Object.keys(oddsMap).length} players`);
 
-  // 4. Fetch players and run simulations
+  const gameTotalsRaw = await getGameTotals();
+  const gameTotals = {}; // gameId -> total, matched by team names
+  for (const game of games) {
+    for (const [key, total] of Object.entries(gameTotalsRaw)) {
+      const lower = key.toLowerCase();
+      if (lower.includes(game.awayTeam.name.toLowerCase()) || lower.includes(game.homeTeam.name.toLowerCase())) {
+        gameTotals[game.id] = total;
+        break;
+      }
+    }
+  }
+  console.log(`  Found totals for ${Object.keys(gameTotals).length}/${games.length} games`);
+
+  // 5. Fetch players and run simulations
   const analyses = [];
   let totalPlayers = 0;
 
@@ -409,7 +483,11 @@ async function main() {
             const avgSOG = mean(gl.map(g => g.shots));
             if (avgSOG < 0.8) return null;
 
-            const ctx = oppContext[`${team}_opp`] || {};
+            const ctx = {
+              ...(oppContext[`${team}_opp`] || {}),
+              isB2B: b2bTeams.has(team),
+              vegasTotal: gameTotals[game.id] || null,
+            };
             const sim = runSimulation(gl, side, ctx);
 
             const odds = oddsMap[sk.fullName] || null;
@@ -424,7 +502,7 @@ async function main() {
               position: sk.position, headshot: sk.headshot,
               gameId: game.id, gameTime: game.startTime,
               gameLog: gl.slice(0, 20), seasonAvgSOG: round(avgSOG, 2),
-              simulation: sim,
+              simulation: sim, isBackToBack: b2bTeams.has(team),
               odds: odds ? { line: odds.line, overOdds: odds.overOdds, underOdds: odds.underOdds, bookmaker: odds.bookmakerTitle || odds.bookmaker } : null,
               edge, edgeValue: edge?.edge || -999, hasEdge: edge?.isPlayable || false,
             };
