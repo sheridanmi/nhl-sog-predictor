@@ -7,8 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "fetch": "node scripts/fetch-data.js",
-    "fetch:debug": "node scripts/fetch-data.js --debug"
+    "fetch": "node scripts/daily-fetch.cjs"
   },
   "dependencies": {
     "firebase": "^12.10.0",
