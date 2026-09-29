@@ -20,6 +20,7 @@ if (!ODDS_API_KEY) {
   process.exit(1);
 }
 const SEASON = '20262027';
+const SEASON_START_DATE = '2026-09-29'; // update alongside SEASON each year — used to filter stale games out of the game-log/now fallback
 
 const fs = require('fs');
 const path = require('path');
@@ -124,9 +125,15 @@ async function getPlayerGameLog(playerId, landingRecentGames = []) {
       fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/now`),
     ]);
 
+    // NOTE: seasonId-based filtering was tried here and turned out unsafe — the
+    // /now endpoint doesn't reliably include seasonId, and a permissive "let it
+    // through if seasonId is missing" fallback let last season's trailing games
+    // leak into brand-new-season projections. Game dates are always present, so
+    // filter on those instead, against a hardcoded season start date that needs
+    // a one-line update each year alongside SEASON above.
     const seasonGames = seasonRes.status === 'fulfilled' ? (seasonRes.value?.gameLog || []) : [];
     const nowGames = nowRes.status === 'fulfilled'
-      ? (nowRes.value?.gameLog || []).filter(g => !g.seasonId || g.seasonId === 20262027 || String(g.seasonId) === '20262027')
+      ? (nowRes.value?.gameLog || []).filter(g => g.gameDate && g.gameDate >= SEASON_START_DATE)
       : [];
 
     const allGames = [...seasonGames, ...nowGames];
