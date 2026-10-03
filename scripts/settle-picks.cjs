@@ -60,41 +60,20 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // NHL API
 // ============================================================
 
-async function getGameSOGMap(gameId) {
-  try {
-    const data = await fetchJSON(`${NHL_BASE}/gamecenter/${gameId}/boxscore`);
-    const sogMap = {};
-
-    const processTeam = (teamData) => {
-      const allSkaters = [
-        ...(teamData?.forwards || []),
-        ...(teamData?.defense || []),
-      ];
-      for (const player of allSkaters) {
-        const id = player.playerId || player.id;
-        const shots = player.shots ?? (player.toi ? (player.shots || 0) : null);
-        if (id && shots !== null) sogMap[id] = shots;
-      }
-    };
-
-    if (data.playerByGameStats) {
-      processTeam(data.playerByGameStats.homeTeam);
-      processTeam(data.playerByGameStats.awayTeam);
-    } else if (data.boxscore?.playerByGameStats) {
-      processTeam(data.boxscore.playerByGameStats.homeTeam);
-      processTeam(data.boxscore.playerByGameStats.awayTeam);
-    }
-
-    return sogMap;
-  } catch (e) {
-    console.error(`  Error fetching boxscore for game ${gameId}:`, e.message);
-    return {};
-  }
-}
+// The boxscore-based lookup that used to live here (gamecenter/{id}/boxscore,
+// reading player.shots from playerByGameStats) is gone. Its field-name guess
+// was wrong — the real response doesn't have a top-level `shots` field on
+// skaters there — so it silently fell through to a buggy fallback that
+// defaulted every player who'd played to 0 shots, which then got recorded
+// as a real result instead of being treated as "couldn't find it, skip."
+// This endpoint and field are the ones already proven correct throughout
+// the rest of this codebase (daily-fetch.cjs uses the identical call to
+// build every player's season/last5/last10 averages).
+const SEASON = '20262027';
 
 async function getPlayerActualSOG(playerId, gameDate) {
   try {
-    const data = await fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/20262027/2`);
+    const data = await fetchJSON(`${NHL_BASE}/player/${playerId}/game-log/${SEASON}/2`);
     if (!data.gameLog) return null;
     const game = data.gameLog.find(g => g.gameDate === gameDate);
     return game?.shots ?? null;
@@ -187,22 +166,10 @@ async function main() {
   const pending = await getPendingPicks();
   console.log(`   Found ${pending.length} pending picks\n`);
 
-  const gameIds = [...new Set(pending.map(p => p.gameId).filter(Boolean))];
-  const sogByGame = {};
-
-  if (gameIds.length > 0) {
-    console.log(`🏒 Fetching boxscores for ${gameIds.length} game(s)...`);
-    for (const gameId of gameIds) {
-      sogByGame[gameId] = await getGameSOGMap(gameId);
-      console.log(`   Game ${gameId} → ${Object.keys(sogByGame[gameId]).length} players`);
-      await sleep(300);
-    }
-  }
-
   let settled = 0, skipped = 0, won = 0, lost = 0, pushed = 0;
 
   for (const pick of pending) {
-    const { id, playerName, playerId, gameId, line, betSide, gameDate } = pick;
+    const { id, playerName, playerId, line, betSide, gameDate } = pick;
     const pickDate = gameDate || today;
 
     if (pickDate > yesterdayStr) {
@@ -212,8 +179,7 @@ async function main() {
     }
 
     let actualSOG = null;
-    if (gameId && sogByGame[gameId]) actualSOG = sogByGame[gameId][playerId] ?? null;
-    if (actualSOG === null && playerId) {
+    if (playerId) {
       actualSOG = await getPlayerActualSOG(playerId, pickDate);
       await sleep(200);
     }
@@ -244,23 +210,13 @@ async function main() {
   if (snapshots.length === 0) {
     console.log('   No snapshots to settle.\n');
   } else {
-    // Reuse boxscore lookups from part 1, fetch any missing
-    const snapshotGameIds = [...new Set(snapshots.map(s => s.gameId).filter(Boolean))];
-    for (const gameId of snapshotGameIds) {
-      if (!sogByGame[gameId]) {
-        sogByGame[gameId] = await getGameSOGMap(gameId);
-        await sleep(300);
-      }
-    }
-
     let snapSettled = 0, snapSkipped = 0;
 
     for (const snap of snapshots) {
-      const { id, playerName, playerId, gameId, line, gameDate } = snap;
+      const { id, playerName, playerId, line, gameDate } = snap;
 
       let actualSOG = null;
-      if (gameId && sogByGame[gameId]) actualSOG = sogByGame[gameId][playerId] ?? null;
-      if (actualSOG === null && playerId) {
+      if (playerId) {
         actualSOG = await getPlayerActualSOG(playerId, gameDate);
         await sleep(150);
       }
