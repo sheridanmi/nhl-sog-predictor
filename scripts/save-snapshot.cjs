@@ -50,14 +50,19 @@ async function main() {
   }
 
   const data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-  const { analyses, games, timestamp } = data;
+  const { analyses, games, timestamp, scheduleDate } = data;
 
   if (!analyses || analyses.length === 0) {
     console.log('⚠️  No analyses to save. Exiting.');
     return;
   }
 
-  const gameDate = getETDateString(new Date(timestamp));
+  // Prefer the date daily-fetch.cjs actually used to pull tonight's games.
+  // Falling back to the completion timestamp (old behavior) only covers
+  // JSON from before this field existed — that fallback has a known bug
+  // (can disagree with the real schedule date if the run finishes near
+  // midnight ET) and shouldn't be relied on for new runs.
+  const gameDate = scheduleDate || getETDateString(new Date(timestamp));
   console.log(`📅 Saving snapshot for ${gameDate}`);
   console.log(`👤 ${analyses.length} players, ${games?.length || 0} games\n`);
 
@@ -194,8 +199,3 @@ async function main() {
   console.log('');
 }
 
-main().catch(err => {
-  console.error('\n❌ Fatal error:', err.message);
-  console.error(err.stack);
-  process.exit(1);
-});
