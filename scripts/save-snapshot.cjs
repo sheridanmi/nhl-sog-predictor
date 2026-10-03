@@ -27,6 +27,14 @@ const db = getFirestore(app);
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Proper IANA-timezone-aware ET date, not a hand-rolled UTC offset. A fixed
+// offset is wrong half the year (EST vs EDT) and, worse, late-evening games
+// (most NHL games) can already be past UTC midnight by the time this runs,
+// silently rolling the recorded date to the next day. This is what fixes it.
+function getETDateString(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
 async function main() {
   console.log('');
   console.log('╔══════════════════════════════════════════╗');
@@ -49,7 +57,7 @@ async function main() {
     return;
   }
 
-  const gameDate = new Date(timestamp).toISOString().split('T')[0];
+  const gameDate = getETDateString(new Date(timestamp));
   console.log(`📅 Saving snapshot for ${gameDate}`);
   console.log(`👤 ${analyses.length} players, ${games?.length || 0} games\n`);
 
@@ -115,11 +123,16 @@ async function main() {
         isPlayable: player.edge?.isPlayable || false,
 
         // Key simulation factors
-        seasonAvg: player.simulation?.factors?.seasonAvg || null,
-        last5Avg: player.simulation?.factors?.last5Avg || null,
-        last10Avg: player.simulation?.factors?.last10Avg || null,
-        avgTOI: player.simulation?.factors?.avgTOI || null,
-        recentTOI: player.simulation?.factors?.recentTOI || null,
+        seasonAvg: player.simulation?.factors?.seasonAvg ?? null,
+        last5Avg: player.simulation?.factors?.last5Avg ?? null,
+        last10Avg: player.simulation?.factors?.last10Avg ?? null,
+        avgTOI: player.simulation?.factors?.avgTOI ?? null,
+        recentTOI: player.simulation?.factors?.recentTOI ?? null,
+        avgPPTOI: player.simulation?.factors?.avgPPTOI ?? null,
+        homeAwayAdj: player.simulation?.factors?.homeAwayAdj ?? null,
+        oppSAPerGame: player.simulation?.factors?.oppSAPerGame ?? null,
+        vegasTotal: player.simulation?.factors?.vegasTotal ?? null,
+        nbDispersion: player.simulation?.nbDispersion ?? null,
         isBackToBack: player.simulation?.factors?.isBackToBack || false,
         oppGoalie: player.simulation?.factors?.oppGoalie || null,
         oppGoalieSV: player.simulation?.factors?.oppGoalieSV || null,
