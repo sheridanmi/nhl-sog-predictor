@@ -4,6 +4,14 @@ import { collection, query, where, getDocs, limit } from 'firebase/firestore';
 const SNAPSHOTS = 'snapshots';
 const SUMMARIES = 'snapshot_summaries';
 
+// The 2026-27 season actually started here. Snapshots from before this date
+// are leftover dev/test data from when this project was first being built —
+// they predate the real model entirely and would otherwise silently wreck
+// every stat on this tab (e.g. a 2.4% win rate pulling in 6 months of
+// unrelated test data alongside ~4 real nights). Update alongside SEASON /
+// SEASON_START_DATE in daily-fetch.cjs each year.
+const SEASON_START_DATE = '2026-09-29';
+
 // ============================================================
 // FETCHING
 // ============================================================
@@ -11,13 +19,16 @@ const SUMMARIES = 'snapshot_summaries';
 export async function getSettledSnapshots(maxDocs = 5000) {
   const q = query(collection(db, SNAPSHOTS), where('settled', '==', true), limit(maxDocs));
   const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(s => (s.gameDate || '') >= SEASON_START_DATE);
 }
 
 export async function getSnapshotSummaries() {
   const snap = await getDocs(collection(db, SUMMARIES));
   return snap.docs
     .map(d => ({ id: d.id, ...d.data() }))
+    .filter(s => (s.gameDate || s.id || '') >= SEASON_START_DATE)
     .sort((a, b) => (a.gameDate || '').localeCompare(b.gameDate || ''));
 }
 
@@ -29,7 +40,7 @@ export async function getStrongEdgeSnapshots(minEdge = 10, maxDocs = 5000) {
   const snap = await getDocs(q);
   return snap.docs
     .map(d => ({ id: d.id, ...d.data() }))
-    .filter(s => (s.edge ?? -999) >= minEdge)
+    .filter(s => (s.edge ?? -999) >= minEdge && (s.gameDate || '') >= SEASON_START_DATE)
     .sort((a, b) => (b.gameDate || '').localeCompare(a.gameDate || ''));
 }
 
