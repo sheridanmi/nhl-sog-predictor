@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, CartesianGrid, ReferenceLine, Cell,
 } from 'recharts';
 import {
-  getSettledSnapshots, getSnapshotSummaries, getStrongEdgeSnapshots,
+  getAllSnapshots, filterSettled, filterStrongEdges, getSnapshotSummaries,
   calcOverallStats, calcEdgeBucketStats, calcCalibrationCurve, calcSplitStats, calcCLVStats,
 } from '../services/backtestService.js';
 
@@ -96,7 +96,7 @@ function StrongEdgeLog({ snapshots, minEdge }) {
                 <tr key={s.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
                   <td style={{ padding: '8px 10px', color: '#64748b', whiteSpace: 'nowrap' }}>{s.gameDate}</td>
                   <td style={{ padding: '8px 10px', color: '#f1f5f9', fontWeight: 600, textAlign: 'left' }}>{s.playerName}</td>
-                  <td style={{ padding: '8px 10px', color: '#94a3b8', textAlign: 'right' }}>{s.team}{s.homeAway === 'home' ? '' : ` @ ${s.opponent || ''}`}</td>
+                  <td style={{ padding: '8px 10px', color: '#94a3b8', textAlign: 'right' }}>{s.team}{s.opponent ? ` ${s.homeAway === 'home' ? 'vs' : '@'} ${s.opponent}` : ''}</td>
                   <td style={{ padding: '8px 10px', color: '#cbd5e1', textAlign: 'right' }}>O {s.line}</td>
                   <td style={{ padding: '8px 10px', color: '#cbd5e1', textAlign: 'right' }}>{s.overOdds > 0 ? `+${s.overOdds}` : s.overOdds}</td>
                   <td style={{ padding: '8px 10px', color: '#4ade80', fontWeight: 700, textAlign: 'right' }}>+{s.edge}%</td>
@@ -131,12 +131,10 @@ export default function BacktestAnalyzer() {
     setLoading(true);
     setError(null);
     try {
-      const [snaps, sums, strong] = await Promise.all([
-        getSettledSnapshots(5000), getSnapshotSummaries(), getStrongEdgeSnapshots(STRONG_EDGE_MIN, 5000),
-      ]);
-      setSnapshots(snaps);
+      const [allSnaps, sums] = await Promise.all([getAllSnapshots(5000), getSnapshotSummaries()]);
+      setSnapshots(filterSettled(allSnaps));
       setSummaries(sums);
-      setStrongEdges(strong);
+      setStrongEdges(filterStrongEdges(allSnaps, STRONG_EDGE_MIN));
     } catch (e) {
       console.error('Backtest load error:', e);
       setError('Failed to load backtest data from Firestore. Check console for details.');
