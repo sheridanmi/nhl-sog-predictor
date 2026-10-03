@@ -87,8 +87,7 @@ function stdDev(arr) {
 // NHL API FUNCTIONS
 // ============================================================
 
-async function getTodaysGames() {
-  const today = getETDateString();
+async function getTodaysGames(today = getETDateString()) {
   console.log(`📅 Checking schedule for ${today}...`);
   const data = await fetchJSON(`${NHL_BASE}/schedule/${today}`);
   const todayData = data.gameWeek?.find(day => day.date === today);
@@ -444,11 +443,18 @@ async function main() {
   console.log('');
 
   // 1. Get schedule
-  const games = await getTodaysGames();
+  // Determined ONCE here and used both for the schedule fetch and the saved
+  // output's scheduleDate — previously, save-snapshot.cjs re-derived its own
+  // date from this run's completion timestamp instead, which could disagree
+  // with the date actually used to pull tonight's games if the run happened
+  // to finish close to or after midnight ET (a real risk given GitHub's
+  // scheduled-workflow timing can drift by hours).
+  const scheduleDate = getETDateString();
+  const games = await getTodaysGames(scheduleDate);
   console.log(`📅 ${games.length} games tonight\n`);
 
   if (games.length === 0) {
-    const result = { games: [], analyses: [], weights: WEIGHTS, timestamp: new Date().toISOString(), loadTime: 0, playersScanned: 0, edgesFound: 0, error: 'No games scheduled for today' };
+    const result = { games: [], analyses: [], weights: WEIGHTS, timestamp: new Date().toISOString(), scheduleDate, loadTime: 0, playersScanned: 0, edgesFound: 0, error: 'No games scheduled for today' };
     saveResults(result);
     console.log('\n⚠️  No games today. Empty results saved.');
     return;
@@ -604,6 +610,7 @@ async function main() {
   const result = {
     games, analyses, weights: WEIGHTS,
     timestamp: new Date().toISOString(),
+    scheduleDate,
     loadTime: elapsed,
     playersScanned: totalPlayers,
     edgesFound,
@@ -645,10 +652,3 @@ function saveResults(data) {
     console.log('💾 Also saved to dist/ for Firebase');
   }
 }
-
-main().then(() => {
-  process.exit(0);
-}).catch(err => {
-  console.error('\n❌ Fatal error:', err.message);
-  process.exit(1);
-});
