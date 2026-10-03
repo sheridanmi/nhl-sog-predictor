@@ -19,6 +19,7 @@ on:
           - goalies
           - settle
           - both
+          - resettle
 
 jobs:
   # ============================================================
@@ -175,3 +176,36 @@ jobs:
           FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
           FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
         run: node scripts/settle-picks.cjs
+
+  # ============================================================
+  # JOB 4: One-time repair for records settled by the old buggy
+  # boxscore lookup. Manual trigger only — never runs on schedule.
+  # Safe to run more than once; reports 0 corrections once the
+  # data is clean and doesn't need running again after that.
+  # ============================================================
+  resettle-corrupted:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'resettle'
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install firebase-admin
+        run: npm install firebase-admin
+
+      - name: Run repair script
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
+          FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
+        run: node scripts/resettle-corrupted.cjs
