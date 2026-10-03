@@ -56,6 +56,14 @@ function fetchJSON(url) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Same ET-aware date helper as daily-fetch.cjs and save-snapshot.cjs. This
+// script is scheduled to run at 1 AM ET, where naive UTC happens to agree
+// with ET most nights — but GitHub's cron schedule has been observed to
+// drift by hours, so relying on that coincidence isn't safe.
+function getETDateString(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
 // ============================================================
 // NHL API
 // ============================================================
@@ -156,10 +164,8 @@ async function main() {
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
 
-  const today = new Date().toISOString().split('T')[0];
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = yesterday.toISOString().split('T')[0];
+  const today = getETDateString();
+  const yesterdayStr = getETDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
 
   // ── PART 1: Settle user picks ──────────────────────────────
   console.log('📋 PART 1: Settling user picks...');
