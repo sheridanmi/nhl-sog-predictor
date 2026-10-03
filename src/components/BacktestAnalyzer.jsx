@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, CartesianGrid, ReferenceLine, Cell,
 } from 'recharts';
 import {
-  getSettledSnapshots, getSnapshotSummaries,
+  getSettledSnapshots, getSnapshotSummaries, getStrongEdgeSnapshots,
   calcOverallStats, calcEdgeBucketStats, calcCalibrationCurve, calcSplitStats, calcCLVStats,
 } from '../services/backtestService.js';
 
@@ -46,11 +46,84 @@ function SplitList({ items }) {
   );
 }
 
+function ResultPill({ result }) {
+  const styles = {
+    won: { bg: 'rgba(74,222,128,0.12)', border: 'rgba(74,222,128,0.25)', color: '#4ade80', text: 'WON' },
+    lost: { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.25)', color: '#ef4444', text: 'LOST' },
+    push: { bg: 'rgba(148,163,184,0.12)', border: 'rgba(148,163,184,0.25)', color: '#94a3b8', text: 'PUSH' },
+    pending: { bg: 'rgba(250,204,21,0.1)', border: 'rgba(250,204,21,0.2)', color: '#facc15', text: 'PENDING' },
+  };
+  const s = styles[result] || styles.pending;
+  return (
+    <span style={{ padding: '3px 9px', borderRadius: 6, background: s.bg, border: `1px solid ${s.border}`, color: s.color, fontFamily: MONO, fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap' }}>
+      {s.text}
+    </span>
+  );
+}
+
+function StrongEdgeLog({ snapshots, minEdge }) {
+  const MAX_ROWS = 150;
+  const shown = snapshots.slice(0, MAX_ROWS);
+  const record = snapshots.reduce((acc, s) => {
+    if (s.overResult === 'won') acc.won++;
+    else if (s.overResult === 'lost') acc.lost++;
+    else if (s.overResult === 'push') acc.push++;
+    else acc.pending++;
+    return acc;
+  }, { won: 0, lost: 0, push: 0, pending: 0 });
+
+  return (
+    <Section
+      title={`🔥 STRONG EDGE PICK LOG (${minEdge}%+)`}
+      subtitle={`Every pick the model has flagged at ${minEdge}% edge or higher, win or lose — not just the ones you bet on. Record: ${record.won}-${record.lost}${record.push ? `-${record.push}` : ''}${record.pending ? `, ${record.pending} pending` : ''}.`}
+    >
+      {snapshots.length === 0 ? (
+        <div style={{ fontFamily: MONO, fontSize: 12, color: '#475569', padding: '20px 0', textAlign: 'center' }}>
+          No picks at {minEdge}%+ edge yet.
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: MONO, fontSize: 12 }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                {['DATE', 'PLAYER', 'TEAM', 'LINE', 'ODDS', 'EDGE', 'ACTUAL', 'RESULT'].map(h => (
+                  <th key={h} style={{ textAlign: h === 'PLAYER' ? 'left' : 'right', padding: '8px 10px', color: '#475569', fontWeight: 700, fontSize: 10, letterSpacing: 0.5 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map(s => (
+                <tr key={s.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                  <td style={{ padding: '8px 10px', color: '#64748b', whiteSpace: 'nowrap' }}>{s.gameDate}</td>
+                  <td style={{ padding: '8px 10px', color: '#f1f5f9', fontWeight: 600, textAlign: 'left' }}>{s.playerName}</td>
+                  <td style={{ padding: '8px 10px', color: '#94a3b8', textAlign: 'right' }}>{s.team}{s.homeAway === 'home' ? '' : ` @ ${s.opponent || ''}`}</td>
+                  <td style={{ padding: '8px 10px', color: '#cbd5e1', textAlign: 'right' }}>O {s.line}</td>
+                  <td style={{ padding: '8px 10px', color: '#cbd5e1', textAlign: 'right' }}>{s.overOdds > 0 ? `+${s.overOdds}` : s.overOdds}</td>
+                  <td style={{ padding: '8px 10px', color: '#4ade80', fontWeight: 700, textAlign: 'right' }}>+{s.edge}%</td>
+                  <td style={{ padding: '8px 10px', color: '#cbd5e1', textAlign: 'right' }}>{s.actualSOG != null ? s.actualSOG : '—'}</td>
+                  <td style={{ padding: '8px 10px', textAlign: 'right' }}><ResultPill result={s.overResult || 'pending'} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {snapshots.length > MAX_ROWS && (
+            <div style={{ fontFamily: MONO, fontSize: 10, color: '#475569', textAlign: 'center', padding: '10px 0 0' }}>
+              Showing {MAX_ROWS} most recent of {snapshots.length} total.
+            </div>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 export default function BacktestAnalyzer() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [snapshots, setSnapshots] = useState([]);
   const [summaries, setSummaries] = useState([]);
+  const [strongEdges, setStrongEdges] = useState([]);
+  const STRONG_EDGE_MIN = 10;
 
   useEffect(() => { load(); }, []);
 
@@ -58,9 +131,12 @@ export default function BacktestAnalyzer() {
     setLoading(true);
     setError(null);
     try {
-      const [snaps, sums] = await Promise.all([getSettledSnapshots(5000), getSnapshotSummaries()]);
+      const [snaps, sums, strong] = await Promise.all([
+        getSettledSnapshots(5000), getSnapshotSummaries(), getStrongEdgeSnapshots(STRONG_EDGE_MIN, 5000),
+      ]);
       setSnapshots(snaps);
       setSummaries(sums);
+      setStrongEdges(strong);
     } catch (e) {
       console.error('Backtest load error:', e);
       setError('Failed to load backtest data from Firestore. Check console for details.');
@@ -84,15 +160,21 @@ export default function BacktestAnalyzer() {
 
   const overall = calcOverallStats(snapshots);
 
+  // The strong-edge log is useful from the very first pick — gating it behind
+  // the same 20-decided threshold as the statistical charts below would hide
+  // exactly the thing someone wants to see earliest in a new season.
   if (overall.decided < 20) {
     return (
-      <div style={{ padding: 40, textAlign: 'center' }}>
-        <div style={{ fontSize: 36, marginBottom: 12 }}>📸</div>
-        <div style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 700, color: '#f1f5f9', marginBottom: 8 }}>Not enough settled data yet</div>
-        <div style={{ fontFamily: MONO, fontSize: 12, color: '#64748b', maxWidth: 440, margin: '0 auto', lineHeight: 1.6 }}>
-          Found {overall.decided} settled snapshot{overall.decided === 1 ? '' : 's'} out of {overall.totalSnapshots} total in Firestore.
-          The stats below need at least 20 decided picks (won or lost) to mean anything. Snapshots settle automatically
-          every night at 1 AM ET after games finish — check back once the season's been running a bit.
+      <div style={{ animation: 'fadeIn 0.25s ease' }}>
+        <StrongEdgeLog snapshots={strongEdges} minEdge={STRONG_EDGE_MIN} />
+        <div style={{ padding: 40, textAlign: 'center' }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>📸</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: 16, fontWeight: 700, color: '#f1f5f9', marginBottom: 8 }}>Not enough settled data yet for the stats below</div>
+          <div style={{ fontFamily: MONO, fontSize: 12, color: '#64748b', maxWidth: 440, margin: '0 auto', lineHeight: 1.6 }}>
+            Found {overall.decided} settled snapshot{overall.decided === 1 ? '' : 's'} out of {overall.totalSnapshots} total in Firestore.
+            Calibration and edge-bucket charts need at least 20 decided picks (won or lost) to mean anything. Snapshots
+            settle automatically every night at 1 AM ET after games finish — check back once the season's been running a bit.
+          </div>
         </div>
       </div>
     );
@@ -120,6 +202,8 @@ export default function BacktestAnalyzer() {
         />
         <Card label="NIGHTS OF DATA" value={summaries.length} sub={summaries[0]?.gameDate ? `since ${summaries[0].gameDate}` : ''} />
       </div>
+
+      <StrongEdgeLog snapshots={strongEdges} minEdge={STRONG_EDGE_MIN} />
 
       {/* Calibration curve */}
       <Section
