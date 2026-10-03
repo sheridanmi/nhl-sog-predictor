@@ -21,6 +21,18 @@ export async function getSnapshotSummaries() {
     .sort((a, b) => (a.gameDate || '').localeCompare(b.gameDate || ''));
 }
 
+// Every pick the model has ever flagged at or above a given edge threshold —
+// settled AND still-pending — not just the ones the user placed a bet on.
+// This is the model's own track record, independent of the user's Results Tracker.
+export async function getStrongEdgeSnapshots(minEdge = 10, maxDocs = 5000) {
+  const q = query(collection(db, SNAPSHOTS), limit(maxDocs));
+  const snap = await getDocs(q);
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(s => (s.edge ?? -999) >= minEdge)
+    .sort((a, b) => (b.gameDate || '').localeCompare(a.gameDate || ''));
+}
+
 // ============================================================
 // ANALYSIS
 // ============================================================
