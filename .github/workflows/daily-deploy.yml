@@ -58,6 +58,7 @@ jobs:
         run: node scripts/daily-fetch.cjs
 
       - name: Save snapshot to Firestore
+        continue-on-error: true  # Backtesting data is secondary — a Firestore hiccup (e.g. quota) must never block the live site deploy below
         env:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
