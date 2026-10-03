@@ -16,12 +16,31 @@ const SEASON_START_DATE = '2026-09-29';
 // FETCHING
 // ============================================================
 
-export async function getSettledSnapshots(maxDocs = 5000) {
-  const q = query(collection(db, SNAPSHOTS), where('settled', '==', true), limit(maxDocs));
+// Single read of the snapshots collection for the whole Backtest tab. This
+// used to be two separate near-full-collection queries (one filtered to
+// settled, one unfiltered for the strong-edge log) — on a free Spark-plan
+// Firestore project (50k reads/day), that was burning through the daily
+// quota in a handful of page loads. Everything below derives from this one
+// fetch in memory instead of hitting Firestore again.
+export async function getAllSnapshots(maxDocs = 5000) {
+  const q = query(collection(db, SNAPSHOTS), limit(maxDocs));
   const snap = await getDocs(q);
   return snap.docs
     .map(d => ({ id: d.id, ...d.data() }))
     .filter(s => (s.gameDate || '') >= SEASON_START_DATE);
+}
+
+export function filterSettled(allSnapshots) {
+  return allSnapshots.filter(s => s.settled === true);
+}
+
+// Every pick the model has ever flagged at or above a given edge threshold —
+// settled AND still-pending — not just the ones the user placed a bet on.
+// This is the model's own track record, independent of the user's Results Tracker.
+export function filterStrongEdges(allSnapshots, minEdge = 10) {
+  return allSnapshots
+    .filter(s => (s.edge ?? -999) >= minEdge)
+    .sort((a, b) => (b.gameDate || '').localeCompare(a.gameDate || ''));
 }
 
 export async function getSnapshotSummaries() {
@@ -30,18 +49,6 @@ export async function getSnapshotSummaries() {
     .map(d => ({ id: d.id, ...d.data() }))
     .filter(s => (s.gameDate || s.id || '') >= SEASON_START_DATE)
     .sort((a, b) => (a.gameDate || '').localeCompare(b.gameDate || ''));
-}
-
-// Every pick the model has ever flagged at or above a given edge threshold —
-// settled AND still-pending — not just the ones the user placed a bet on.
-// This is the model's own track record, independent of the user's Results Tracker.
-export async function getStrongEdgeSnapshots(minEdge = 10, maxDocs = 5000) {
-  const q = query(collection(db, SNAPSHOTS), limit(maxDocs));
-  const snap = await getDocs(q);
-  return snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter(s => (s.edge ?? -999) >= minEdge && (s.gameDate || '') >= SEASON_START_DATE)
-    .sort((a, b) => (b.gameDate || '').localeCompare(a.gameDate || ''));
 }
 
 // ============================================================
@@ -165,10 +172,3 @@ export function calcCLVStats(snapshots) {
   const withCLV = snapshots.filter(s => s.clv != null);
   if (!withCLV.length) return { count: 0, avgCLV: null, positiveRate: null };
   const avgCLV = withCLV.reduce((sum, s) => sum + s.clv, 0) / withCLV.length;
-  const positive = withCLV.filter(s => s.clv > 0).length;
-  return {
-    count: withCLV.length,
-    avgCLV: +avgCLV.toFixed(2),
-    positiveRate: +((positive / withCLV.length) * 100).toFixed(1),
-  };
-}
