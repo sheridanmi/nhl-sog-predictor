@@ -207,14 +207,60 @@ async function main() {
 
   console.log(`\n  Picks: ${pickChecked} checked, ${pickFixed} corrected, ${pickAlreadyCorrect} already correct, ${pickSkippedNoData} skipped (no data)\n`);
 
+  // ── PART 3: Stuck PENDING snapshots with a wrong gameDate ───────
+  // settle-picks.cjs only ever looks for yesterday's unsettled snapshots by
+  // date — if a snapshot's stored gameDate is wrong, it's invisible to that
+  // nightly job forever, even after the real game finishes. This catches
+  // snapshots still marked pending whose actual game already has a result.
+  console.log('⏳ PART 3: Checking pending snapshots for a wrong gameDate...');
+  const pendingSnap = await db.collection('snapshots').where('settled', '==', false).get();
+  const pendingSnapshots = pendingSnap.docs.map(d => ({ id: d.id, ref: d.ref, ...d.data() }));
+  console.log(`   Found ${pendingSnapshots.length} pending snapshots to check\n`);
+
+  let pendingChecked = 0, pendingFixed = 0, pendingStillPending = 0, pendingSkippedNoData = 0;
+  batch = db.batch();
+  batchCount = 0;
+
+  for (const snap of pendingSnapshots) {
+    if (!snap.playerId || !snap.gameDate || snap.line == null) { pendingSkippedNoData++; continue; }
+    const result = await getCorrectGameData(snap.playerId, snap.gameDate);
+    pendingChecked++;
+
+    if (result === null) {
+      pendingStillPending++; // genuinely still pending — game hasn't happened/finished yet
+      continue;
+    }
+
+    const { gameDate: correctDate, actualSOG: correctSOG, dateWasWrong } = result;
+    let overResult = 'push';
+    if (correctSOG > snap.line) overResult = 'won';
+    else if (correctSOG < snap.line) overResult = 'lost';
+
+    const dateNote = dateWasWrong ? ` (date ${snap.gameDate} → ${correctDate})` : '';
+    console.log(`  🔧 ${(snap.playerName || snap.id).padEnd(24)} O${snap.line}  found actual: ${correctSOG} (${overResult})${dateNote} — settling`);
+
+    const update = { actualSOG: correctSOG, overResult, settled: true, settledAt: Timestamp.now(), correctedAt: Timestamp.now() };
+    if (dateWasWrong) update.gameDate = correctDate;
+    batch.update(snap.ref, update);
+    batchCount++;
+    pendingFixed++;
+    if (batchCount === 400) { await batch.commit(); batch = db.batch(); batchCount = 0; }
+
+    await sleep(50);
+  }
+  if (batchCount > 0) await batch.commit();
+
+  console.log(`\n  Pending snapshots: ${pendingChecked} checked, ${pendingFixed} corrected+settled, ${pendingStillPending} genuinely still pending, ${pendingSkippedNoData} skipped (no data)\n`);
+
   // ── Summary ────────────────────────────────────────────────
   console.log('╔══════════════════════════════════════════╗');
   console.log('║  ✅ REPAIR COMPLETE                       ║');
-  console.log(`║  📸 ${String(snapFixed).padEnd(3)} snapshots corrected           ║`);
+  console.log(`║  📸 ${String(snapFixed).padEnd(3)} settled snapshots corrected   ║`);
   console.log(`║  📋 ${String(pickFixed).padEnd(3)} picks corrected               ║`);
+  console.log(`║  ⏳ ${String(pendingFixed).padEnd(3)} stuck pending snapshots fixed ║`);
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
-  if (snapFixed === 0 && pickFixed === 0) {
+  if (snapFixed === 0 && pickFixed === 0 && pendingFixed === 0) {
     console.log('Nothing needed fixing — safe to consider the data clean. No need to run this script again unless settle-picks.cjs changes again.');
   }
 }
