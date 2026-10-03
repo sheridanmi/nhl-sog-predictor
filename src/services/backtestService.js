@@ -172,3 +172,10 @@ export function calcCLVStats(snapshots) {
   const withCLV = snapshots.filter(s => s.clv != null);
   if (!withCLV.length) return { count: 0, avgCLV: null, positiveRate: null };
   const avgCLV = withCLV.reduce((sum, s) => sum + s.clv, 0) / withCLV.length;
+  const positive = withCLV.filter(s => s.clv > 0).length;
+  return {
+    count: withCLV.length,
+    avgCLV: +avgCLV.toFixed(2),
+    positiveRate: +((positive / withCLV.length) * 100).toFixed(1),
+  };
+}
