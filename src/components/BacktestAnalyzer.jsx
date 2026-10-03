@@ -1,3 +1,5 @@
+// VERSION-MARKER: getAllSnapshots-fix-v2 — if you don't see this comment when
+// you open the file, you're looking at an old copy, not this one.
 import { useState, useEffect } from 'react';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip,
