@@ -6,12 +6,13 @@
  * and uploads results to Firebase Storage.
  * 
  * Usage:
- *   node scripts/daily-fetch.js
+ *   node scripts/daily-fetch.cjs
  * 
  * Or on Windows, double-click run_model.bat
  */
 
 const NHL_BASE = 'https://api-web.nhle.com/v1';
+
 const ODDS_BASE = 'https://api.the-odds-api.com/v4';
 const SPORT = 'icehockey_nhl';
 const ODDS_API_KEY = process.env.ODDS_API_KEY;
@@ -26,6 +27,17 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
+
+// Proper IANA-timezone-aware ET date/time, replacing the three hand-rolled
+// `etOffset = -5` calculations that used to live in this file. A fixed
+// offset is wrong for half the year (EST vs EDT) and silently drifts by an
+// hour whenever the wrong one is hardcoded — which is exactly what was
+// happening here during EDT. This also powers getETDateString below, which
+// fixed a real bug: save-snapshot.cjs was recording games as happening a
+// day late whenever a game time crossed UTC midnight.
+function getETDateString(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
 
 // ============================================================
 // HTTP FETCH HELPER (no external dependencies needed)
@@ -76,10 +88,7 @@ function stdDev(arr) {
 // ============================================================
 
 async function getTodaysGames() {
-  // Use ET date so late-night UTC doesn't roll to next day
-  const etOffset = -5; // EST (use -4 for EDT)
-  const nowET = new Date(Date.now() + etOffset * 60 * 60 * 1000);
-  const today = nowET.toISOString().split('T')[0];
+  const today = getETDateString();
   console.log(`📅 Checking schedule for ${today}...`);
   const data = await fetchJSON(`${NHL_BASE}/schedule/${today}`);
   const todayData = data.gameWeek?.find(day => day.date === today);
@@ -205,12 +214,7 @@ async function getTeamStats(teamAbbrev) {
 }
 
 async function getTeamsPlayedYesterday() {
-  // Use ET date, same offset logic as getTodaysGames, so "yesterday" lines up with tonight's ET slate
-  const etOffset = -5; // EST; use -4 for EDT
-  const nowET = new Date(Date.now() + etOffset * 60 * 60 * 1000);
-  const yestET = new Date(nowET);
-  yestET.setDate(yestET.getDate() - 1);
-  const dateStr = yestET.toISOString().split('T')[0];
+  const dateStr = getETDateString(new Date(Date.now() - 24 * 60 * 60 * 1000));
   try {
     const data = await fetchJSON(`${NHL_BASE}/schedule/${dateStr}`);
     const dayData = data.gameWeek?.find(d => d.date === dateStr);
@@ -483,15 +487,11 @@ async function main() {
   // 4. Get betting odds + game totals
   console.log('\n💰 Fetching betting lines...');
   const events = await getOddsEvents();
-  // Use ET date (UTC-5 standard / UTC-4 daylight) to match game times
-  const etOffset = -5; // EST; use -4 for EDT (adjust if needed)
-  const nowET = new Date(Date.now() + etOffset * 60 * 60 * 1000);
-  const todayET = nowET.toISOString().split('T')[0];
+  const todayET = getETDateString();
   // Also accept games whose commence_time falls within today ET (7PM ET = midnight UTC next day)
   const todayEvents = events.filter(e => {
     if (!e.commence_time) return false;
-    const gameET = new Date(new Date(e.commence_time).getTime() + etOffset * 60 * 60 * 1000);
-    return gameET.toISOString().split('T')[0] === todayET;
+    return getETDateString(new Date(e.commence_time)) === todayET;
   });
   const eventsToFetch = todayEvents.length > 0 ? todayEvents : events.slice(0, 8);
 
