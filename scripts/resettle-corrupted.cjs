@@ -1,18 +1,27 @@
 /**
  * ONE-TIME REPAIR SCRIPT
  *
- * settle-picks.cjs previously used a boxscore endpoint with a wrong field
- * name that silently returned 0 shots for almost every player, instead of
- * correctly falling back or skipping. Every snapshot and pick settled by
- * the old code is potentially wrong — this script re-checks every one of
- * them against the proven-correct /player/{id}/game-log/{season}/2 endpoint
- * (the same source daily-fetch.cjs already uses for live projections) and
- * corrects any that don't match.
+ * Fixes two separate bugs found in already-saved data:
  *
- * Run this ONCE after deploying the fixed settle-picks.cjs. It is safe to
- * run more than once — anything already correct is left untouched (and
- * reported separately from what was actually fixed) — but there's no need
- * to run it again once it reports 0 corrections.
+ * 1. settle-picks.cjs used to read shots from a boxscore endpoint with a
+ *    wrong field name, which silently returned 0 for almost every player
+ *    instead of falling back or skipping. Nearly every settled record is
+ *    potentially wrong.
+ *
+ * 2. save-snapshot.cjs computed gameDate with naive UTC date extraction
+ *    instead of a real Eastern-time conversion. Any game whose start time
+ *    crossed UTC midnight (most night games do) got recorded one day late.
+ *    That wrong date then makes exact-date lookups fail entirely, which is
+ *    why bug #1's "fix" alone couldn't correct those specific records.
+ *
+ * This script re-derives the correct game date AND shot count for every
+ * settled record from /player/{id}/game-log/{season}/2 — the same source
+ * daily-fetch.cjs already uses for live projections — trying the stored
+ * date first and a +/-1 day window if that doesn't match anything.
+ *
+ * Run this ONCE after deploying the fixed save-snapshot.cjs and
+ * settle-picks.cjs. Safe to run more than once — anything already correct
+ * is left untouched and reported separately from what was actually fixed.
  *
  * Usage:
  *   node scripts/resettle-corrupted.cjs
@@ -78,10 +87,24 @@ async function getPlayerGameLog(playerId) {
   }
 }
 
-async function getCorrectActualSOG(playerId, gameDate) {
+function shiftDateString(dateStr, deltaDays) {
+  const d = new Date(dateStr + 'T12:00:00Z'); // noon UTC avoids any DST edge case in the date math itself
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().split('T')[0];
+}
+
+// Tries the stored date first, then +/-1 day. Returns both the shot count
+// AND the date that actually matched, so callers can correct a wrong stored
+// gameDate, not just a wrong actualSOG. Returns null if nothing matches
+// within the window (meaning the game truly isn't in this player's log,
+// not just mis-dated — gets reported and left alone rather than guessed).
+async function getCorrectGameData(playerId, storedGameDate) {
   const log = await getPlayerGameLog(playerId);
-  const game = log.find(g => g.gameDate === gameDate);
-  return game?.shots ?? null;
+  for (const candidateDate of [storedGameDate, shiftDateString(storedGameDate, -1), shiftDateString(storedGameDate, 1)]) {
+    const game = log.find(g => g.gameDate === candidateDate);
+    if (game) return { gameDate: candidateDate, actualSOG: game.shots, dateWasWrong: candidateDate !== storedGameDate };
+  }
+  return null;
 }
 
 async function main() {
@@ -103,16 +126,17 @@ async function main() {
 
   for (const snap of snapshots) {
     if (!snap.playerId || !snap.gameDate || snap.line == null) { snapSkippedNoData++; continue; }
-    const correctSOG = await getCorrectActualSOG(snap.playerId, snap.gameDate);
+    const result = await getCorrectGameData(snap.playerId, snap.gameDate);
     snapChecked++;
 
-    if (correctSOG === null) {
-      console.log(`  ❓ ${(snap.playerName || snap.id).padEnd(24)} ${snap.gameDate} — no game-log entry found, leaving as-is`);
+    if (result === null) {
+      console.log(`  ❓ ${(snap.playerName || snap.id).padEnd(24)} ${snap.gameDate} — no game-log entry found within +/-1 day, leaving as-is`);
       snapSkippedNoData++;
       continue;
     }
 
-    if (correctSOG === snap.actualSOG) {
+    const { gameDate: correctDate, actualSOG: correctSOG, dateWasWrong } = result;
+    if (correctSOG === snap.actualSOG && !dateWasWrong) {
       snapAlreadyCorrect++;
       continue;
     }
@@ -121,9 +145,12 @@ async function main() {
     if (correctSOG > snap.line) overResult = 'won';
     else if (correctSOG < snap.line) overResult = 'lost';
 
-    console.log(`  🔧 ${(snap.playerName || snap.id).padEnd(24)} O${snap.line}  was: ${snap.actualSOG} (${snap.overResult})  →  correct: ${correctSOG} (${overResult})`);
+    const dateNote = dateWasWrong ? `, date ${snap.gameDate} → ${correctDate}` : '';
+    console.log(`  🔧 ${(snap.playerName || snap.id).padEnd(24)} O${snap.line}  was: ${snap.actualSOG} (${snap.overResult})  →  correct: ${correctSOG} (${overResult})${dateNote}`);
 
-    batch.update(snap.ref, { actualSOG: correctSOG, overResult, correctedAt: Timestamp.now() });
+    const update = { actualSOG: correctSOG, overResult, correctedAt: Timestamp.now() };
+    if (dateWasWrong) update.gameDate = correctDate;
+    batch.update(snap.ref, update);
     batchCount++;
     snapFixed++;
     if (batchCount === 400) { await batch.commit(); batch = db.batch(); batchCount = 0; }
@@ -146,15 +173,16 @@ async function main() {
 
   for (const pick of picks) {
     if (!pick.playerId || !pick.gameDate || pick.line == null || !pick.betSide) { pickSkippedNoData++; continue; }
-    const correctSOG = await getCorrectActualSOG(pick.playerId, pick.gameDate);
+    const result = await getCorrectGameData(pick.playerId, pick.gameDate);
     pickChecked++;
 
-    if (correctSOG === null) {
+    if (result === null) {
       pickSkippedNoData++;
       continue;
     }
 
-    if (correctSOG === pick.actualSOG) {
+    const { gameDate: correctDate, actualSOG: correctSOG, dateWasWrong } = result;
+    if (correctSOG === pick.actualSOG && !dateWasWrong) {
       pickAlreadyCorrect++;
       continue;
     }
@@ -163,9 +191,12 @@ async function main() {
     if (correctSOG > pick.line) status = pick.betSide === 'over' ? 'won' : 'lost';
     else if (correctSOG < pick.line) status = pick.betSide === 'over' ? 'lost' : 'won';
 
-    console.log(`  🔧 ${(pick.playerName || pick.id).padEnd(24)} ${pick.betSide.toUpperCase()} ${pick.line}  was: ${pick.actualSOG} (${pick.status})  →  correct: ${correctSOG} (${status})`);
+    const dateNote = dateWasWrong ? `, date ${pick.gameDate} → ${correctDate}` : '';
+    console.log(`  🔧 ${(pick.playerName || pick.id).padEnd(24)} ${pick.betSide.toUpperCase()} ${pick.line}  was: ${pick.actualSOG} (${pick.status})  →  correct: ${correctSOG} (${status})${dateNote}`);
 
-    batch.update(pick.ref, { actualSOG: correctSOG, status, correctedAt: Timestamp.now() });
+    const update = { actualSOG: correctSOG, status, correctedAt: Timestamp.now() };
+    if (dateWasWrong) update.gameDate = correctDate;
+    batch.update(pick.ref, update);
     batchCount++;
     pickFixed++;
     if (batchCount === 400) { await batch.commit(); batch = db.batch(); batchCount = 0; }
