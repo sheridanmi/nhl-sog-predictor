@@ -1,0 +1,55 @@
+name: Model Analysis (calibration report)
+
+# Read-only: pulls settled snapshots from Firestore, runs scripts/analyze.py, and
+# publishes an AGGREGATE report (no player names) to the run's Summary tab and as
+# a downloadable artifact. The raw export stays on the runner and is discarded.
+#
+# Run it any time from Actions -> "Model Analysis" -> Run workflow.
+# Also runs Mondays after the nightly settle job.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 7 * * 1'   # Mondays ~3:30 AM EDT, after the 2 AM settle run
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          npm install firebase-admin --no-save
+          pip install numpy scipy
+
+      - name: Export settled snapshots (read-only)
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
+          FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
+          OUT: ${{ runner.temp }}/snapshots-export.json
+        run: node scripts/export-snapshots.cjs
+
+      - name: Run analysis
+        run: python3 scripts/analyze.py "${{ runner.temp }}/snapshots-export.json" report.md
+
+      - name: Publish report to run summary
+        run: cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-calibration-report
+          path: report.md
